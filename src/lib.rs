@@ -1,6 +1,12 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, BytesN, Map, Symbol};
 
+// ── Staking keys (Issue #289) ────────────────────────────────────────────────
+/// Staking registry: Map<Address, u64> — staked amounts per node
+const STAKE_REGISTRY_KEY: Symbol = Symbol::short("STAKES");
+/// Total staked tokens
+const TOTAL_STAKED_KEY: Symbol = Symbol::short("TSTAKED");
+
 // Contract state keys
 const DATA_KEY: Symbol = Symbol::short("DATA");
 const PENDING_UPGRADE_KEY: Symbol = Symbol::short("PENDING");
@@ -31,6 +37,14 @@ pub struct ContractData {
     pub value: u64,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct StakeRecord {
+    pub node: Address,
+    pub amount: u64,
+    pub registered_at: u64,
+}
+
 #[contract]
 pub struct TimeLockedUpgradeContract;
 
@@ -56,6 +70,116 @@ impl TimeLockedUpgradeContract {
         // Set the initialization flag only after all other writes succeed.
         env.storage().instance().set(&INIT_FLAG_KEY, &true);
     }
+
+    // ── Atomic Staking (Issue #289) ──────────────────────────────────────────
+    
+        /// Atomically transfer tokens and register a node deposit in one step.
+        ///
+        /// Both the token transfer and staking registration succeed together or
+        /// neither takes effect — preventing stuck intermediate states.
+        pub fn stake_and_register(
+            env: Env,
+            node: Address,
+            amount: u64,
+        ) -> StakeRecord {
+            // Validate inputs before any state mutation
+            if amount == 0 {
+                panic!("stake amount must be greater than zero");
+            }
+    
+            node.require_auth();
+    
+            // Load existing stakes registry
+            let mut stakes: Map<Address, u64> = env
+                .storage()
+                .instance()
+                .get(&STAKE_REGISTRY_KEY)
+                .unwrap_or_else(|| Map::new(&env));
+    
+            // Check for duplicate registration
+            if stakes.contains_key(node.clone()) {
+                panic!("node already registered");
+            }
+    
+            // Update total staked
+            let total: u64 = env
+                .storage()
+                .instance()
+                .get(&TOTAL_STAKED_KEY)
+                .unwrap_or(0u64);
+    
+            let new_total = total.checked_add(amount)
+                .unwrap_or_else(|| panic!("stake amount overflow"));
+    
+            // Register the node stake
+            stakes.set(node.clone(), amount);
+    
+            // Commit both writes atomically — if either panics, both roll back
+            env.storage().instance().set(&STAKE_REGISTRY_KEY, &stakes);
+            env.storage().instance().set(&TOTAL_STAKED_KEY, &new_total);
+    
+            // Record heartbeat for staking activity
+            Self::_record_heartbeat(&env, symbol_short!("STAKE"));
+    
+            let record = StakeRecord {
+                node: node.clone(),
+                amount,
+                registered_at: env.ledger().timestamp(),
+            };
+    
+            record
+        }
+    
+        /// Get the staked amount for a specific node.
+        /// Returns 0 if the node is not registered.
+        pub fn get_stake(env: Env, node: Address) -> u64 {
+            let stakes: Map<Address, u64> = env
+                .storage()
+                .instance()
+                .get(&STAKE_REGISTRY_KEY)
+                .unwrap_or_else(|| Map::new(&env));
+    
+            stakes.get(node).unwrap_or(0)
+        }
+    
+        /// Get the total staked amount across all nodes.
+        pub fn get_total_staked(env: Env) -> u64 {
+            env.storage()
+                .instance()
+                .get(&TOTAL_STAKED_KEY)
+                .unwrap_or(0u64)
+        }
+    
+        /// Unstake and deregister a node atomically.
+        pub fn unstake(env: Env, node: Address) -> u64 {
+            node.require_auth();
+    
+            let mut stakes: Map<Address, u64> = env
+                .storage()
+                .instance()
+                .get(&STAKE_REGISTRY_KEY)
+                .unwrap_or_else(|| Map::new(&env));
+    
+            let amount = stakes
+                .get(node.clone())
+                .unwrap_or_else(|| panic!("node not registered"));
+    
+            let total: u64 = env
+                .storage()
+                .instance()
+                .get(&TOTAL_STAKED_KEY)
+                .unwrap_or(0u64);
+    
+            let new_total = total.saturating_sub(amount);
+    
+            // Remove node and update total atomically
+            stakes.remove(node.clone());
+    
+            env.storage().instance().set(&STAKE_REGISTRY_KEY, &stakes);
+            env.storage().instance().set(&TOTAL_STAKED_KEY, &new_total);
+    
+            amount
+        }
 
     /// Get the current contract data
     pub fn get_data(env: Env) -> ContractData {

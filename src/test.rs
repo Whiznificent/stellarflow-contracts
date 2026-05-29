@@ -336,6 +336,103 @@ fn test_unauthorized_set_value() {
     assert!(result.is_err());
 }
 */
+// ═══════════════════════════════════════════════════════════════════════════
+// Atomic Staking tests (Issue #289)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_stake_and_register_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    let record = client.stake_and_register(&node, &1000u64);
+
+    assert_eq!(record.node, node);
+    assert_eq!(record.amount, 1000u64);
+    assert_eq!(client.get_stake(&node), 1000u64);
+    assert_eq!(client.get_total_staked(), 1000u64);
+}
+
+#[test]
+fn test_stake_updates_heartbeat() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    let stake_asset = symbol_short!("STAKE");
+    assert!(!client.is_data_fresh(&stake_asset));
+
+    client.stake_and_register(&node, &500u64);
+
+    assert!(client.is_data_fresh(&stake_asset));
+}
+
+#[test]
+fn test_multiple_nodes_stake() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node1 = soroban_sdk::Address::generate(&env);
+    let node2 = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    client.stake_and_register(&node1, &1000u64);
+    client.stake_and_register(&node2, &2000u64);
+
+    assert_eq!(client.get_stake(&node1), 1000u64);
+    assert_eq!(client.get_stake(&node2), 2000u64);
+    assert_eq!(client.get_total_staked(), 3000u64);
+}
+
+#[test]
+fn test_get_stake_unregistered_node_returns_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(client.get_stake(&node), 0u64);
+    assert_eq!(client.get_total_staked(), 0u64);
+}
+
+#[test]
+fn test_unstake_removes_node_and_updates_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    client.stake_and_register(&node, &1000u64);
+    assert_eq!(client.get_total_staked(), 1000u64);
+
+    let returned = client.unstake(&node);
+
+    assert_eq!(returned, 1000u64);
+    assert_eq!(client.get_stake(&node), 0u64);
+    assert_eq!(client.get_total_staked(), 0u64);
+}
 
 #[test]
 fn test_set_value_updates_heartbeat() {
