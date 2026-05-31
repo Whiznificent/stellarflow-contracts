@@ -75,6 +75,11 @@ pub enum DataKey {
     MinQuorumThreshold,
     /// Staked collateral balance for a relayer/provider (i128, in token stroops).
     ProviderStake(Address),
+    /// Consecutive missed-block infractions for a relayer/provider.
+    ProviderConsecutiveMissedBlocks(Address),
+    /// Uptime streak start timestamp used to reset slashing multipliers after 48h
+    /// of uninterrupted healthy operation.
+    ProviderUptimeStreakStart(Address),
     /// The SEP-41 token contract address used for staking and slashing.
     SlashToken,
     /// The address of the ecosystem insurance reserve that receives slashed funds.
@@ -124,6 +129,8 @@ pub struct PriceData {
     pub price: i128,
     /// Ledger timestamp when this price was written.
     pub timestamp: u64,
+    /// Exact ledger sequence number for this price write.
+    pub ledger_sequence: u32,
     /// Address that provided the price update.
     pub provider: Address,
     /// Number of decimals for the price value.

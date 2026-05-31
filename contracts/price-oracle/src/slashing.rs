@@ -17,15 +17,19 @@
 //! # Storage layout
 //! | Key                              | Type      | Description                              |
 //! |----------------------------------|-----------|------------------------------------------|
-//! | `DataKey::ProviderStake(addr)`   | `i128`    | Staked collateral per relayer (stroops)  |
-//! | `DataKey::SlashToken`            | `Address` | SEP-41 token used for staking/slashing   |
-//! | `DataKey::InsuranceReserve`      | `Address` | Destination for slashed funds            |
+//! | `DataKey::ProviderStake(addr)`             | `i128`    | Staked collateral per relayer (stroops)          |
+//! | `DataKey::ProviderConsecutiveMissedBlocks(addr)` | `u32`     | Consecutive missed-block infractions for a relayer |
+//! | `DataKey::ProviderUptimeStreakStart(addr)` | `u64`     | Timestamp when a relayer began a healthy uptime streak |
+//! | `DataKey::SlashToken`                      | `Address` | SEP-41 token used for staking/slashing           |
+//! | `DataKey::InsuranceReserve`                | `Address` | Destination for slashed funds                    |
 
 use soroban_sdk::{token, Address, Env, String, Symbol};
 
 use crate::types::DataKey;
 use crate::Error;
 use crate::SlashExecutedEvent;
+
+const UPTIME_RESET_SECONDS: u64 = 48 * 60 * 60;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
@@ -44,6 +48,121 @@ fn set_stake(env: &Env, relayer: &Address, amount: i128) {
     env.storage()
         .persistent()
         .set(&DataKey::ProviderStake(relayer.clone()), &amount);
+}
+
+/// Read the current consecutive missed-block counter for a relayer.
+pub fn get_consecutive_missed_blocks(env: &Env, relayer: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ProviderConsecutiveMissedBlocks(relayer.clone()))
+        .unwrap_or(0)
+}
+
+/// Overwrite the missed-block counter for a relayer.
+fn set_consecutive_missed_blocks(env: &Env, relayer: &Address, count: u32) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ProviderConsecutiveMissedBlocks(relayer.clone()), &count);
+}
+
+/// Remove the missed-block counter for a relayer.
+fn clear_consecutive_missed_blocks(env: &Env, relayer: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::ProviderConsecutiveMissedBlocks(relayer.clone()));
+}
+
+/// Read the relayer uptime streak start timestamp.
+pub fn get_uptime_streak_start(env: &Env, relayer: &Address) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ProviderUptimeStreakStart(relayer.clone()))
+}
+
+/// Store or clear a relayer uptime streak start timestamp.
+fn set_uptime_streak_start(env: &Env, relayer: &Address, timestamp: Option<u64>) {
+    if let Some(ts) = timestamp {
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProviderUptimeStreakStart(relayer.clone()), &ts);
+    } else {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ProviderUptimeStreakStart(relayer.clone()));
+    }
+}
+
+/// Calculate the exponential slash multiplier from the current consecutive
+/// missed-block counter.
+///
+/// The baseline floor is `1` and the penalty scales exponentially with every
+/// additional consecutive missed block.
+fn calculate_exponential_multiplier(count: u32) -> Result<i128, Error> {
+    if count == 0 {
+        return Ok(1);
+    }
+    let exponent = count.saturating_sub(1);
+    if exponent >= 126 {
+        return Ok(i128::MAX);
+    }
+    Ok(1_i128.checked_shl(exponent).ok_or(Error::InvalidInfractionCount)?)
+}
+
+/// Get the effective slashing multiplier for the relayer.
+pub fn get_slash_multiplier(env: &Env, relayer: &Address) -> Result<i128, Error> {
+    let count = get_consecutive_missed_blocks(env, relayer);
+    calculate_exponential_multiplier(count)
+}
+
+/// Report that a relayer missed one or more consecutive blocks.
+///
+/// This increments the infraction counter and clears any uptime streak. The
+/// resulting multiplier will scale future slashes exponentially.
+pub fn report_missed_blocks(
+    env: &Env,
+    relayer: &Address,
+    missed_blocks: u32,
+) -> Result<i128, Error> {
+    if missed_blocks == 0 {
+        return Err(Error::InvalidInfractionCount);
+    }
+
+    let current = get_consecutive_missed_blocks(env, relayer);
+    let next = current
+        .checked_add(missed_blocks)
+        .ok_or(Error::InvalidInfractionCount)?;
+    set_consecutive_missed_blocks(env, relayer, next);
+    set_uptime_streak_start(env, relayer, None);
+
+    calculate_exponential_multiplier(next)
+}
+
+/// Report a period of uninterrupted uptime for a relayer.
+///
+/// The relayer's infraction counter is reset only after a full 48-hour streak
+/// of healthy uptime.
+pub fn report_successful_uptime(env: &Env, relayer: &Address) -> Result<bool, Error> {
+    let current = get_consecutive_missed_blocks(env, relayer);
+    if current == 0 {
+        return Ok(false);
+    }
+
+    let now = env.ledger().timestamp();
+    match get_uptime_streak_start(env, relayer) {
+        None => {
+            set_uptime_streak_start(env, relayer, Some(now));
+            Ok(false)
+        }
+        Some(start_ts) => {
+            if now >= start_ts.saturating_add(UPTIME_RESET_SECONDS) {
+                clear_consecutive_missed_blocks(env, relayer);
+                set_uptime_streak_start(env, relayer, None);
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+    }
 }
 
 /// Parse a slash amount from the governance proposal's `data` string.
@@ -107,14 +226,18 @@ pub fn parse_slash_amount(_env: &Env, data: &String) -> Result<i128, Error> {
 /// - `amount` must be > 0.
 /// - `SlashToken` must be configured.
 /// - `InsuranceReserve` must be configured.
-/// - `bad_relayer` must have a stake ≥ `amount`.
+/// - `bad_relayer` must have a stake ≥ the scaled penalty amount.
+///
+/// The slashing amount is scaled by the relayer's current consecutive missed-
+/// block multiplier, which grows exponentially with repeated outages.
 ///
 /// # Effects
-/// 1. Deducts `amount` from `bad_relayer`'s on-chain stake balance.
-/// 2. Transfers `amount` tokens from the contract's custody to the insurance reserve.
-/// 3. If the relayer's remaining stake reaches zero, removes them from the
+/// 1. Calculates the effective slashing penalty after multiplier scaling.
+/// 2. Deducts that amount from `bad_relayer`'s on-chain stake balance.
+/// 3. Transfers the scaled amount from the contract's custody to the insurance reserve.
+/// 4. If the relayer's remaining stake reaches zero, removes them from the
 ///    active provider whitelist (they can re-stake and be re-added later).
-/// 4. Emits a `SlashExecutedEvent`.
+/// 5. Emits a `SlashExecutedEvent`.
 pub fn execute_slash_internal(
     env: &Env,
     executor: &Address,
@@ -125,6 +248,12 @@ pub fn execute_slash_internal(
     if amount <= 0 {
         return Err(Error::InvalidSlashAmount);
     }
+
+    // ── Compute scaled penalty based on relayer uptime/downtime history. ─────
+    let multiplier = get_slash_multiplier(env, bad_relayer)?;
+    let slashed_amount = amount
+        .checked_mul(multiplier)
+        .ok_or(Error::InvalidSlashAmount)?;
 
     // ── Resolve token and reserve ────────────────────────────────────────────
     let token_address: Address = env
@@ -141,19 +270,19 @@ pub fn execute_slash_internal(
 
     // ── Check stake balance ──────────────────────────────────────────────────
     let current_stake = get_stake(env, bad_relayer);
-    if amount > current_stake {
+    if slashed_amount > current_stake {
         return Err(Error::InsufficientStake);
     }
 
     // ── Deduct stake ─────────────────────────────────────────────────────────
-    let remaining_stake = current_stake - amount;
+    let remaining_stake = current_stake - slashed_amount;
     set_stake(env, bad_relayer, remaining_stake);
 
     // ── Transfer slashed tokens to the insurance reserve ─────────────────────
     // The contract holds the staked tokens in its own custody, so we transfer
     // from `current_contract_address()` to the reserve.
     let token_client = token::Client::new(env, &token_address);
-    token_client.transfer(&env.current_contract_address(), &reserve, &amount);
+    token_client.transfer(&env.current_contract_address(), &reserve, &slashed_amount);
 
     // ── Auto-delist relayer if fully slashed ─────────────────────────────────
     // A relayer with zero stake can no longer be trusted to submit prices.
@@ -166,7 +295,7 @@ pub fn execute_slash_internal(
     // ── Emit event ───────────────────────────────────────────────────────────
     env.events().publish_event(&SlashExecutedEvent {
         bad_relayer: bad_relayer.clone(),
-        amount,
+        amount: slashed_amount,
         reserve: reserve.clone(),
         executor: executor.clone(),
     });
@@ -177,7 +306,7 @@ pub fn execute_slash_internal(
         (Symbol::new(env, "slash_executed"),),
         (
             bad_relayer.clone(),
-            amount,
+            slashed_amount,
             reserve,
             executor.clone(),
             remaining_stake,
@@ -249,5 +378,49 @@ mod slashing_tests {
         let relayer = Address::generate(&env);
         set_stake(&env, &relayer, 1_000_000);
         assert_eq!(get_stake(&env, &relayer), 1_000_000);
+    }
+
+    #[test]
+    fn test_report_missed_blocks_updates_count_and_multiplier() {
+        let env = Env::default();
+        let relayer = Address::generate(&env);
+
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 0);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
+
+        let multiplier = report_missed_blocks(&env, &relayer, 1).unwrap();
+        assert_eq!(multiplier, 1);
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 1);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
+
+        let multiplier = report_missed_blocks(&env, &relayer, 1).unwrap();
+        assert_eq!(multiplier, 2);
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_report_successful_uptime_resets_after_48_hours() {
+        let env = Env::default();
+        let relayer = Address::generate(&env);
+
+        report_missed_blocks(&env, &relayer, 2).unwrap();
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 2);
+
+        env.ledger().set_timestamp(1_000);
+        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), false);
+        assert_eq!(get_uptime_streak_start(&env, &relayer), Some(1_000));
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
+
+        env.ledger().set_timestamp(1_000 + UPTIME_RESET_SECONDS - 1);
+        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), false);
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
+
+        env.ledger().set_timestamp(1_000 + UPTIME_RESET_SECONDS);
+        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), true);
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 0);
+        assert_eq!(get_uptime_streak_start(&env, &relayer), None);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
     }
 }

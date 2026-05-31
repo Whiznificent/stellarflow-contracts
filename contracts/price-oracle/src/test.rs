@@ -894,6 +894,7 @@ fn test_clear_assets_removes_persistent_price_keys() {
             &PriceData {
                 price: 1_000,
                 timestamp: 10,
+                ledger_sequence: 0,
                 provider: env.current_contract_address(),
                 decimals: 2,
                 confidence_score: 100,
@@ -905,6 +906,7 @@ fn test_clear_assets_removes_persistent_price_keys() {
             &PriceData {
                 price: 2_000,
                 timestamp: 10,
+                ledger_sequence: 0,
                 provider: env.current_contract_address(),
                 decimals: 2,
                 confidence_score: 100,
@@ -935,6 +937,7 @@ fn test_clear_assets_rejects_batches_above_limit_atomically() {
             &PriceData {
                 price: 1_000,
                 timestamp: 10,
+                ledger_sequence: 0,
                 provider: env.current_contract_address(),
                 decimals: 2,
                 confidence_score: 100,
