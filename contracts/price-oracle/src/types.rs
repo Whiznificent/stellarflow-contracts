@@ -307,15 +307,3 @@ pub struct ProposedAction {
     pub cancelled: bool,
 }
 
-/// A weighted component of a multi-asset index basket.
-///
-/// Used by `get_index_price` to compute a weighted average across assets.
-/// `weight` is expressed in basis points (e.g. 4000 = 40%).
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AssetWeight {
-    /// The asset symbol (e.g. NGN, KES, GHS).
-    pub asset: Symbol,
-    /// Weight in basis points (0–10000). All weights in a basket should sum to 10000.
-    pub weight: u32,
-}

@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, panic_with_error, Address, Env, Vec};
 
-use crate::Error;
+use crate::ContractError;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Storage Key
@@ -26,6 +26,10 @@ pub enum DataKey {
     ProposedAction(u64),
     /// Stores the list of voters for a proposed multi-sig action.
     ActionVotes(u64),
+    /// Maps an admin address to their ephemeral submission delegate.
+    SubmissionDelegate(Address),
+    /// Maps a delegate address back to the admin who authorized it.
+    DelegateOf(Address),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,7 +44,7 @@ pub fn _get_admin(env: &Env) -> Vec<Address> {
     env.storage()
         .instance()
         .get(&DataKey::Admin)
-        .unwrap_or_else(|| panic_with_error!(env, Error::AdminNotSet))
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotSet))
 }
 
 pub fn _has_admin(env: &Env) -> bool {
@@ -58,7 +62,7 @@ pub fn _is_authorized(env: &Env, caller: &Address) -> bool {
 
 pub fn _require_authorized(env: &Env, caller: &Address) {
     if !_is_authorized(env, caller) {
-        panic_with_error!(env, Error::NotAuthorized);
+        panic_with_error!(env, ContractError::NotAuthorized);
     }
 }
 
@@ -101,6 +105,49 @@ pub fn _renounce_ownership(env: &Env) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Delegate Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Assign a hot-wallet delegate for a cold-storage admin.
+pub fn _set_delegate(env: &Env, admin: &Address, delegate: &Address) {
+    // Remove old delegate reverse-mapping if this admin already had one
+    if let Some(old_delegate) = _get_delegate(env, admin) {
+        env.storage().instance().remove(&DataKey::DelegateOf(old_delegate));
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::SubmissionDelegate(admin.clone()), delegate);
+    env.storage()
+        .instance()
+        .set(&DataKey::DelegateOf(delegate.clone()), admin);
+}
+
+/// Get the hot-wallet delegate assigned to an admin.
+pub fn _get_delegate(env: &Env, admin: &Address) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::SubmissionDelegate(admin.clone()))
+}
+
+/// Get the admin who assigned this delegate.
+pub fn _get_admin_for_delegate(env: &Env, delegate: &Address) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::DelegateOf(delegate.clone()))
+}
+
+/// Revoke a hot-wallet delegate from an admin.
+pub fn _remove_delegate(env: &Env, admin: &Address) {
+    if let Some(delegate) = _get_delegate(env, admin) {
+        env.storage().instance().remove(&DataKey::DelegateOf(delegate));
+        env.storage()
+            .instance()
+            .remove(&DataKey::SubmissionDelegate(admin.clone()));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Pause Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -139,18 +186,28 @@ pub fn _remove_provider(env: &Env, provider: &Address) {
     _remove_from_active_relayers(env, provider);
 }
 
-/// Returns `true` if the address is a whitelisted provider.
+/// Returns `true` if the address is a whitelisted provider OR an authorized delegate.
 pub fn _is_provider(env: &Env, addr: &Address) -> bool {
-    env.storage()
+    // 1. Direct provider whitelist check
+    if env.storage()
         .instance()
         .get::<DataKey, bool>(&DataKey::Provider(addr.clone()))
-        .unwrap_or(false)
+        .unwrap_or(false) {
+        return true;
+    }
+
+    // 2. Delegate check: is this address a delegate for an authorized admin?
+    if let Some(admin) = _get_admin_for_delegate(env, addr) {
+        return _is_authorized(env, &admin);
+    }
+
+    false
 }
 
 /// Panics if the caller is not a whitelisted provider.
 pub fn _require_provider(env: &Env, caller: &Address) {
     if !_is_provider(env, caller) {
-        panic_with_error!(env, Error::ProviderNotAuthorized);
+        panic_with_error!(env, ContractError::ProviderNotAuthorized);
     }
 }
 
@@ -289,7 +346,7 @@ pub fn _is_council(env: &Env, caller: &Address) -> bool {
 /// Panic if the caller is not the Community Council.
 pub fn _require_council(env: &Env, caller: &Address) {
     if !_is_council(env, caller) {
-        panic_with_error!(env, Error::CouncilRequired);
+        panic_with_error!(env, ContractError::CouncilRequired);
     }
 }
 
@@ -311,7 +368,7 @@ pub fn _set_frozen(env: &Env, frozen: bool) {
 /// Panic if the contract is in emergency freeze state.
 pub fn _require_not_frozen(env: &Env) {
     if _is_frozen(env) {
-        panic_with_error!(env, Error::ContractFrozen);
+        panic_with_error!(env, ContractError::ContractFrozen);
     }
 }
 

@@ -493,7 +493,7 @@ fn test_unauthorized_set_value_returns_typed_error() {
     let unauthorized = soroban_sdk::Address::generate(&env);
     client.initialize(&admin);
 
-    let result = client.try_set_value(&42, &unauthorized);
+    let result = client.try_set_value(&42, &unauthorized, &0u64);
     assert_eq!(result, Err(Ok(ContractError::NotAdmin)));
 }
 

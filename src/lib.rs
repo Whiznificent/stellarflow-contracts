@@ -1,28 +1,55 @@
 #![no_std]
-#![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, BytesN, Map, Symbol, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, BytesN, Map, Symbol, Vec};
+
+mod nonce;
+use crate::nonce::{consume_nonce, get_nonce};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    NotAdmin = 3,
+    NoPendingUpgrade = 4,
+    UpgradeTimelockNotSatisfied = 5,
+    InvalidHeartbeatInterval = 6,
+    InvalidNonce = 7,
+    AlreadyRegistered = 8,
+    NotRegistered = 9,
+    InvalidStakeAmount = 10,
+    Overflow = 11,
+    Unauthorized = 12,
+    TargetNotAdmin = 13,
+    ProposalAlreadyActive = 14,
+    NoActiveProposal = 15,
+    AlreadyVoted = 16,
+    ThresholdNotReached = 17,
+}
 
 // Contract state keys
-const DATA_KEY: Symbol = Symbol::short("DATA");
-const PENDING_UPGRADE_KEY: Symbol = Symbol::short("PENDING");
+const DATA_KEY: Symbol = symbol_short!("DATA");
+const PENDING_UPGRADE_KEY: Symbol = symbol_short!("PENDING");
 const UPGRADE_DELAY_SECONDS: u64 = 48 * 60 * 60; // 48 hours in seconds
-// Dedicated initialization flag — separate from DATA_KEY so the guard survives
-// partial-write failures and is not sensitive to data structure changes.
-const INIT_FLAG_KEY: Symbol = Symbol::short("INITD");
+const INIT_FLAG_KEY: Symbol = symbol_short!("INITD");
+
+// Stake keys
+const STAKE_REGISTRY_KEY: Symbol = symbol_short!("STAKES");
+const TOTAL_STAKED_KEY: Symbol = symbol_short!("TOTAL");
 
 // ── Heartbeat keys (Issue #188) ──────────────────────────────────────────────
 /// Per-asset last-update timestamps: Map<Symbol, u64>
-const HEARTBEAT_KEY: Symbol = Symbol::short("HBEAT");
+const HEARTBEAT_KEY: Symbol = symbol_short!("HBEAT");
 /// Configurable heartbeat interval in seconds (default: 5 minutes = 300s)
-const HB_INTERVAL_KEY: Symbol = Symbol::short("HBINTV");
+const HB_INTERVAL_KEY: Symbol = symbol_short!("HBINTV");
 /// Default heartbeat interval: 5 minutes
 const DEFAULT_HEARTBEAT_INTERVAL: u64 = 5 * 60;
 
 // ── Emergency Key Revocation (Task #revocation) ──────────────────────────────
 /// Registered signers list: Vec<Address>
-const SIGNERS_KEY: Symbol = Symbol::short("SIGNERS");
+const SIGNERS_KEY: Symbol = symbol_short!("SIGNERS");
 /// Active revocation proposal
-const REVOCATION_KEY: Symbol = Symbol::short("REVOKE");
+const REVOCATION_KEY: Symbol = symbol_short!("REVOKE");
 
 /// An active revocation proposal.
 #[contracttype]
@@ -94,10 +121,10 @@ impl TimeLockedUpgradeContract {
             env: Env,
             node: Address,
             amount: u64,
-        ) -> StakeRecord {
+        ) -> Result<StakeRecord, ContractError> {
             // Validate inputs before any state mutation
             if amount == 0 {
-                panic!("stake amount must be greater than zero");
+                return Err(ContractError::InvalidStakeAmount);
             }
     
             node.require_auth();
@@ -111,7 +138,7 @@ impl TimeLockedUpgradeContract {
     
             // Check for duplicate registration
             if stakes.contains_key(node.clone()) {
-                panic!("node already registered");
+                return Err(ContractError::AlreadyRegistered);
             }
     
             // Update total staked
@@ -122,7 +149,7 @@ impl TimeLockedUpgradeContract {
                 .unwrap_or(0u64);
     
             let new_total = total.checked_add(amount)
-                .unwrap_or_else(|| panic!("stake amount overflow"));
+                .ok_or(ContractError::Overflow)?;
     
             // Register the node stake
             stakes.set(node.clone(), amount);
@@ -140,7 +167,7 @@ impl TimeLockedUpgradeContract {
                 registered_at: env.ledger().timestamp(),
             };
     
-            record
+            Ok(record)
         }
     
         /// Get the staked amount for a specific node.
@@ -164,7 +191,7 @@ impl TimeLockedUpgradeContract {
         }
     
         /// Unstake and deregister a node atomically.
-        pub fn unstake(env: Env, node: Address) -> u64 {
+        pub fn unstake(env: Env, node: Address) -> Result<u64, ContractError> {
             node.require_auth();
     
             let mut stakes: Map<Address, u64> = env
@@ -175,7 +202,7 @@ impl TimeLockedUpgradeContract {
     
             let amount = stakes
                 .get(node.clone())
-                .unwrap_or_else(|| panic!("node not registered"));
+                .ok_or(ContractError::NotRegistered)?;
     
             let total: u64 = env
                 .storage()
@@ -191,7 +218,7 @@ impl TimeLockedUpgradeContract {
             env.storage().instance().set(&STAKE_REGISTRY_KEY, &stakes);
             env.storage().instance().set(&TOTAL_STAKED_KEY, &new_total);
     
-            amount
+            Ok(amount)
         }
 
     /// Get the current contract data
@@ -208,6 +235,7 @@ impl TimeLockedUpgradeContract {
         env: Env,
         new_wasm_hash: BytesN<32>,
         proposer: Address,
+        nonce: u64,
     ) -> Result<(), ContractError> {
         let data = Self::get_data(env.clone())?;
         
@@ -231,7 +259,7 @@ impl TimeLockedUpgradeContract {
     }
 
     /// Execute a pending upgrade if the timelock period has passed
-    pub fn execute_upgrade(env: Env, executor: Address) -> Result<(), ContractError> {
+    pub fn execute_upgrade(env: Env, executor: Address, nonce: u64) -> Result<(), ContractError> {
         let data = Self::get_data(env.clone())?;
         
         // Only admin can execute upgrades
@@ -308,7 +336,7 @@ impl TimeLockedUpgradeContract {
     ///
     /// Also records a heartbeat for the implicit "VALUE" asset so that
     /// `is_data_fresh` can track when the last state mutation occurred.
-    pub fn set_value(env: Env, value: u64, setter: Address) -> Result<(), ContractError> {
+    pub fn set_value(env: Env, value: u64, setter: Address, nonce: u64) -> Result<(), ContractError> {
         let mut data = Self::get_data(env.clone())?;
         
         // Only admin can set values
@@ -429,10 +457,10 @@ impl TimeLockedUpgradeContract {
     /// Signers are the addresses eligible to participate in emergency
     /// revocation votes. The admin itself always counts as a signer but
     /// does not need to be explicitly registered.
-    pub fn register_signer(env: Env, signer: Address, caller: Address) {
-        let data = Self::get_data(env.clone());
+    pub fn register_signer(env: Env, signer: Address, caller: Address) -> Result<(), ContractError> {
+        let data = Self::get_data(env.clone())?;
         if data.admin != caller {
-            panic!("only admin can register signers");
+            return Err(ContractError::NotAdmin);
         }
         caller.require_auth();
 
@@ -441,13 +469,14 @@ impl TimeLockedUpgradeContract {
             signers.push_back(signer);
             env.storage().instance().set(&SIGNERS_KEY, &signers);
         }
+        Ok(())
     }
 
     /// Remove a registered signer. Admin-only.
-    pub fn remove_signer(env: Env, signer: Address, caller: Address) {
-        let data = Self::get_data(env.clone());
+    pub fn remove_signer(env: Env, signer: Address, caller: Address) -> Result<(), ContractError> {
+        let data = Self::get_data(env.clone())?;
         if data.admin != caller {
-            panic!("only admin can remove signers");
+            return Err(ContractError::NotAdmin);
         }
         caller.require_auth();
 
@@ -459,6 +488,7 @@ impl TimeLockedUpgradeContract {
             }
         }
         env.storage().instance().set(&SIGNERS_KEY, &filtered);
+        Ok(())
     }
 
     /// Return the list of registered signers (does not include the admin implicitly).
@@ -478,18 +508,18 @@ impl TimeLockedUpgradeContract {
         target: Address,
         replacement: Address,
         proposer: Address,
-    ) {
+    ) -> Result<(), ContractError> {
         proposer.require_auth();
-        let data = Self::get_data(env.clone());
+        let data = Self::get_data(env.clone())?;
 
         if !Self::_is_signer(&env, &proposer) && data.admin != proposer {
-            panic!("only a registered signer can propose revocation");
+            return Err(ContractError::Unauthorized);
         }
         if data.admin != target {
-            panic!("target is not the current admin");
+            return Err(ContractError::TargetNotAdmin);
         }
         if env.storage().instance().has(&REVOCATION_KEY) {
-            panic!("a revocation proposal is already active");
+            return Err(ContractError::ProposalAlreadyActive);
         }
 
         let mut votes: Vec<Address> = Vec::new(&env);
@@ -503,28 +533,29 @@ impl TimeLockedUpgradeContract {
             votes,
         };
         env.storage().instance().set(&REVOCATION_KEY, &proposal);
+        Ok(())
     }
 
     /// Cast a vote in favour of the active revocation proposal.
     ///
     /// When the vote count reaches the majority threshold the admin key is
     /// immediately replaced with `replacement`.
-    pub fn vote_revocation(env: Env, voter: Address) {
+    pub fn vote_revocation(env: Env, voter: Address) -> Result<(), ContractError> {
         voter.require_auth();
-        let data = Self::get_data(env.clone());
+        let data = Self::get_data(env.clone())?;
 
         if !Self::_is_signer(&env, &voter) && data.admin != voter {
-            panic!("only a registered signer can vote");
+            return Err(ContractError::Unauthorized);
         }
 
         let mut proposal: RevocationProposal = env
             .storage()
             .instance()
             .get(&REVOCATION_KEY)
-            .unwrap_or_else(|| panic!("no active revocation proposal"));
+            .ok_or(ContractError::NoActiveProposal)?;
 
         if proposal.votes.iter().any(|v| v == voter) {
-            panic!("signer has already voted");
+            return Err(ContractError::AlreadyVoted);
         }
 
         proposal.votes.push_back(voter);
@@ -538,58 +569,61 @@ impl TimeLockedUpgradeContract {
         } else {
             env.storage().instance().set(&REVOCATION_KEY, &proposal);
         }
+        Ok(())
     }
 
     /// Execute a revocation proposal that has already reached threshold.
     ///
     /// `vote_revocation` auto-executes on the final vote; this function
     /// exists as an explicit on-chain confirmation path.
-    pub fn execute_revocation(env: Env, caller: Address) {
+    pub fn execute_revocation(env: Env, caller: Address) -> Result<(), ContractError> {
         caller.require_auth();
-        let data = Self::get_data(env.clone());
+        let data = Self::get_data(env.clone())?;
 
         if !Self::_is_signer(&env, &caller) && data.admin != caller {
-            panic!("only a registered signer can execute revocation");
+            return Err(ContractError::Unauthorized);
         }
 
         let proposal: RevocationProposal = env
             .storage()
             .instance()
             .get(&REVOCATION_KEY)
-            .unwrap_or_else(|| panic!("no active revocation proposal"));
+            .ok_or(ContractError::NoActiveProposal)?;
 
         let threshold = Self::_revocation_threshold(&env);
         if proposal.votes.len() < threshold {
-            panic!("revocation threshold not yet reached");
+            return Err(ContractError::ThresholdNotReached);
         }
 
         let mut contract_data = data;
         contract_data.admin = proposal.replacement.clone();
         env.storage().instance().set(&DATA_KEY, &contract_data);
         env.storage().instance().remove(&REVOCATION_KEY);
+        Ok(())
     }
 
     /// Cancel the active revocation proposal.
     ///
     /// Only the proposer or the current admin (when they are not the target)
     /// may cancel.
-    pub fn cancel_revocation(env: Env, caller: Address) {
+    pub fn cancel_revocation(env: Env, caller: Address) -> Result<(), ContractError> {
         caller.require_auth();
-        let data = Self::get_data(env.clone());
+        let data = Self::get_data(env.clone())?;
 
         let proposal: RevocationProposal = env
             .storage()
             .instance()
             .get(&REVOCATION_KEY)
-            .unwrap_or_else(|| panic!("no active revocation proposal"));
+            .ok_or(ContractError::NoActiveProposal)?;
 
         let is_proposer = proposal.proposer == caller;
         let is_admin_not_target = data.admin == caller && data.admin != proposal.target;
         if !is_proposer && !is_admin_not_target {
-            panic!("only the proposer or a non-targeted admin can cancel");
+            return Err(ContractError::Unauthorized);
         }
 
         env.storage().instance().remove(&REVOCATION_KEY);
+        Ok(())
     }
 
     /// Return the active revocation proposal, if any.

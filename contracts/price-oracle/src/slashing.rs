@@ -164,12 +164,7 @@ pub fn execute_slash_internal(
     }
 
     // ── Emit event ───────────────────────────────────────────────────────────
-    env.events().publish_event(&SlashExecutedEvent {
-        bad_relayer: bad_relayer.clone(),
-        amount,
-        reserve: reserve.clone(),
-        executor: executor.clone(),
-    });
+    env.events().publish((Symbol::new(env, "slash_executed_event"),), (bad_relayer.clone(), amount, reserve.clone(), executor.clone()));
 
     // Also publish a plain tuple event for off-chain indexers that don't parse
     // the typed event schema.

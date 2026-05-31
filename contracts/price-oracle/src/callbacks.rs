@@ -18,12 +18,12 @@ pub fn get_subscribers(env: &Env) -> Vec<Address> {
 ///
 /// # Returns
 /// Returns `Err` if the contract is already subscribed to prevent duplicates.
-pub fn subscribe(env: &Env, callback_contract: Address) -> Result<(), crate::Error> {
+pub fn subscribe(env: &Env, callback_contract: Address) -> Result<(), crate::ContractError> {
     let mut subscribers = get_subscribers(env);
 
     // Check if already subscribed
     if subscribers.iter().any(|sub| sub == callback_contract) {
-        return Err(crate::Error::AlreadyInitialized);
+        return Err(crate::ContractError::AlreadyInitialized);
     }
 
     subscribers.push_back(callback_contract);
@@ -42,7 +42,7 @@ pub fn subscribe(env: &Env, callback_contract: Address) -> Result<(), crate::Err
 ///
 /// # Returns
 /// Returns `Err` if the contract is not found in the subscriber list.
-pub fn unsubscribe(env: &Env, callback_contract: &Address) -> Result<(), crate::Error> {
+pub fn unsubscribe(env: &Env, callback_contract: &Address) -> Result<(), crate::ContractError> {
     let mut subscribers = get_subscribers(env);
 
     // Find and remove the subscriber
@@ -63,7 +63,7 @@ pub fn unsubscribe(env: &Env, callback_contract: &Address) -> Result<(), crate::
     }
 
     if !found {
-        return Err(crate::Error::AssetNotFound);
+        return Err(crate::ContractError::AssetNotFound);
     }
 
     env.storage()
@@ -105,7 +105,7 @@ pub fn notify_subscribers(env: &Env, payload: &PriceUpdatePayload) {
 ///
 /// This uses dynamic invocation to call the standardized callback interface.
 /// The callback contract must implement the `on_price_update(payload: PriceUpdatePayload)` function.
-fn try_invoke_callback(env: &Env, callback_contract: &Address, payload: &PriceUpdatePayload) -> Result<(), crate::Error> {
+fn try_invoke_callback(env: &Env, callback_contract: &Address, payload: &PriceUpdatePayload) -> Result<(), crate::ContractError> {
     env.invoke_contract::<()>(
         callback_contract,
         &Symbol::new(env, "on_price_update"),
