@@ -180,6 +180,12 @@ pub fn _add_provider(env: &Env, provider: &Address) {
         .instance()
         .set(&DataKey::Provider(provider.clone()), &true);
     _add_to_active_relayers(env, provider);
+
+    // Issue #263: keep the isolated HealthActiveRelayers slot in sync.
+    let count = _get_active_relayers(env).len();
+    env.storage()
+        .persistent()
+        .set(&crate::types::DataKey::HealthActiveRelayers, &count);
 }
 
 /// Remove a provider from the whitelist.
@@ -188,6 +194,12 @@ pub fn _remove_provider(env: &Env, provider: &Address) {
         .instance()
         .remove(&DataKey::Provider(provider.clone()));
     _remove_from_active_relayers(env, provider);
+
+    // Issue #263: keep the isolated HealthActiveRelayers slot in sync.
+    let count = _get_active_relayers(env).len();
+    env.storage()
+        .persistent()
+        .set(&crate::types::DataKey::HealthActiveRelayers, &count);
 }
 
 /// Returns `true` if the address is a whitelisted provider OR an authorized delegate.
@@ -492,18 +504,61 @@ pub fn _add_action_vote(env: &Env, action_id: u64, voter: &Address) {
 }
 
 /// Check if an action has reached the required threshold (3/5).
+///
+/// # Issue #264 — Weight-accumulation algorithm
+///
+/// Instead of simply counting votes, this function sums the governance weight
+/// of every voter and compares the total against the configured
+/// `WeightThreshold`.  Each admin's weight is stored under
+/// `DataKey::AdminWeight(addr)` and defaults to **1** when unset, so existing
+/// deployments that have never called `set_admin_weight` continue to behave
+/// exactly as before (one vote = one unit of weight).
+///
+/// The `threshold` parameter is the *fallback* vote-count threshold used when
+/// no `WeightThreshold` has been configured.  When a `WeightThreshold` is
+/// present it takes precedence and the raw vote count is ignored.
 pub fn _has_reached_threshold(env: &Env, action_id: u64, threshold: u32) -> bool {
     let voters = _get_action_votes(env, action_id);
-    let admins = _get_admin(env);
-    let admin_count = admins.len() as u32;
 
-    // Threshold is met if we have at least `threshold` votes
-    // Default: 3 out of 5 admins required
-    voters.len() >= threshold
+    // ── Resolve the required weight threshold ────────────────────────────────
+    // If a WeightThreshold has been configured (issue #264) use it; otherwise
+    // fall back to the legacy vote-count threshold so old deployments are
+    // unaffected.
+    let required_weight: u32 = env
+        .storage()
+        .persistent()
+        .get(&crate::types::DataKey::WeightThreshold)
+        .unwrap_or(threshold); // fallback: 1 vote = 1 weight unit
+
+    // ── Accumulate voter weights ─────────────────────────────────────────────
+    let mut accumulated_weight: u32 = 0;
+    for voter in voters.iter() {
+        let weight: u32 = env
+            .storage()
+            .persistent()
+            .get(&crate::types::DataKey::AdminWeight(voter.clone()))
+            .unwrap_or(1); // default weight = 1 (backward-compatible)
+        accumulated_weight = accumulated_weight.saturating_add(weight);
+    }
+
+    accumulated_weight >= required_weight
 }
 
 /// Get the required threshold based on admin count (3/5 of admins).
+///
+/// Returns the *vote-count* threshold used as the fallback when no
+/// `WeightThreshold` has been configured.  When `WeightThreshold` is set,
+/// `_has_reached_threshold` uses that value instead.
 pub fn _get_required_threshold(env: &Env) -> u32 {
+    // If a weight threshold is configured, surface it as the canonical value.
+    if let Some(wt) = env
+        .storage()
+        .persistent()
+        .get::<crate::types::DataKey, u32>(&crate::types::DataKey::WeightThreshold)
+    {
+        return wt;
+    }
+
     let admins = _get_admin(env);
     let admin_count = admins.len() as u32;
 
@@ -516,6 +571,49 @@ pub fn _get_required_threshold(env: &Env) -> u32 {
     } else {
         3 // 3/5 threshold for larger groups
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #264: Admin weight helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Set the governance weight for a specific admin (issue #264).
+///
+/// Weight must be in the range 1–100.  A weight of 0 is rejected because a
+/// zero-weight admin could never contribute to reaching the threshold.
+pub fn _set_admin_weight(env: &Env, admin: &Address, weight: u32) {
+    env.storage()
+        .persistent()
+        .set(&crate::types::DataKey::AdminWeight(admin.clone()), &weight);
+}
+
+/// Get the governance weight for a specific admin (issue #264).
+///
+/// Returns 1 (the default) when no weight has been explicitly assigned,
+/// preserving backward compatibility with deployments that predate #264.
+pub fn _get_admin_weight(env: &Env, admin: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::AdminWeight(admin.clone()))
+        .unwrap_or(1)
+}
+
+/// Set the minimum cumulative weight required for a governance proposal to
+/// execute (issue #264).
+///
+/// `threshold` must be ≥ 1.  Setting it to 0 is rejected because it would
+/// allow any proposal to execute immediately without any votes.
+pub fn _set_weight_threshold(env: &Env, threshold: u32) {
+    env.storage()
+        .persistent()
+        .set(&crate::types::DataKey::WeightThreshold, &threshold);
+}
+
+/// Get the configured weight threshold, or `None` if not set (issue #264).
+pub fn _get_weight_threshold(env: &Env) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::WeightThreshold)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

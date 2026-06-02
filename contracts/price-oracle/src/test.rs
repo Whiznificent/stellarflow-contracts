@@ -257,6 +257,56 @@ fn test_set_and_get_max_deviation_percentage() {
 }
 
 #[test]
+fn test_set_max_deviation_percentage_rejects_values_below_floor() {
+    let (env, contract_id, client) = setup();
+    let admin = Address::generate(&env);
+
+    set_admin(&env, &contract_id, &admin);
+
+    let result = client.try_set_max_deviation_percentage(&admin, &50_i128);
+    match result {
+        Err(Ok(e)) => assert_eq!(e, Error::InvalidMaxDeviation),
+        other => panic!("expected InvalidMaxDeviation, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_get_max_deviation_percentage_clamps_legacy_low_storage() {
+    let (env, contract_id, client) = setup();
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::MaxPriceDeviationBps, &50_i128);
+    });
+
+    assert_eq!(client.get_max_deviation_percentage(), 100_i128);
+}
+
+#[test]
+fn test_rollback_max_deviation_rejects_values_below_floor() {
+    let (env, contract_id, client) = setup();
+    let admin = Address::generate(&env);
+
+    set_admin(&env, &contract_id, &admin);
+    client.set_max_deviation_percentage(&admin, &500_i128);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PrevMaxDeviationBps, &50_i128);
+    });
+
+    let result = client.try_rollback_max_deviation_pct(&admin);
+    match result {
+        Err(Ok(e)) => assert_eq!(e, Error::InvalidMaxDeviation),
+        other => panic!("expected InvalidMaxDeviation, got {:?}", other),
+    }
+
+    assert_eq!(client.get_max_deviation_percentage(), 500_i128);
+}
+
+#[test]
 fn test_update_price_rejects_configured_max_deviation() {
     let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
@@ -277,6 +327,33 @@ fn test_update_price_rejects_configured_max_deviation() {
 }
 
 #[test]
+fn test_set_min_quorum_threshold_rejects_values_below_floor() {
+    let (env, contract_id, client) = setup();
+    let admin = Address::generate(&env);
+
+    set_admin(&env, &contract_id, &admin);
+
+    let result = client.try_set_min_quorum_threshold(&admin, &1u32);
+    match result {
+        Err(Ok(e)) => assert_eq!(e, Error::MultiSigValidationFailed),
+        other => panic!("expected MultiSigValidationFailed, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_get_min_quorum_threshold_clamps_legacy_low_storage() {
+    let (env, contract_id, client) = setup();
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::MinQuorumThreshold, &1u32);
+    });
+
+    assert_eq!(client.get_min_quorum_threshold(), 2u32);
+}
+
+#[test]
 fn test_set_and_get_price_bounds() {
     let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
@@ -292,6 +369,7 @@ fn test_set_and_get_price_bounds() {
 
 #[test]
 fn test_set_price_bounds_emits_indexable_price_bounds_event() {
+fn test_register_assets_with_config_applies_all_config_atomically() {
     let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
     let asset = symbol_short!("NGN");
@@ -307,6 +385,39 @@ fn test_set_price_bounds_emits_indexable_price_bounds_event() {
 
 #[test]
 fn test_set_price_floor_emits_indexable_price_floor_event() {
+
+    let config = AssetRegistrationConfig {
+        asset: asset.clone(),
+        name: Symbol::new(&env, "Nigerian Naira"),
+        base_decimals: 7,
+        quote_decimals: 2,
+        min_price: 500_i128,
+        max_price: 2_000_i128,
+        price_floor: Some(600_i128),
+    };
+
+    client
+        .register_assets_with_config(&admin, &vec![&env, config], &500_i128)
+        .unwrap();
+
+    let info = client.get_asset_info(&asset).unwrap();
+    assert_eq!(info.name, Symbol::new(&env, "Nigerian Naira"));
+    assert_eq!(info.base_decimals, 7);
+    assert_eq!(info.quote_decimals, 2);
+
+    let meta = client.get_asset_meta(&asset).unwrap();
+    assert_eq!(meta.base_decimals, 7);
+    assert_eq!(meta.quote_decimals, 2);
+
+    let bounds = client.get_price_bounds(&asset).unwrap();
+    assert_eq!(bounds.min_price, 500_i128);
+    assert_eq!(bounds.max_price, 2_000_i128);
+    assert_eq!(client.get_max_deviation_percentage(), 500_i128);
+    assert_eq!(client.get_price_floor(&asset), Some(600_i128));
+}
+
+#[test]
+fn test_register_assets_with_config_rolls_back_on_invalid_config() {
     let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
     let asset = symbol_short!("NGN");
@@ -318,6 +429,28 @@ fn test_set_price_floor_emits_indexable_price_floor_event() {
     let debug_str = alloc::format!("{:?}", events);
     assert!(debug_str.contains("price_floor_set"));
     assert!(debug_str.contains("NGN"));
+
+    let bad_config = AssetRegistrationConfig {
+        asset: asset.clone(),
+        name: Symbol::new(&env, "Nigerian Naira"),
+        base_decimals: 7,
+        quote_decimals: 2,
+        min_price: 2_500_i128,
+        max_price: 2_000_i128,
+        price_floor: Some(600_i128),
+    };
+
+    let result = client.try_register_assets_with_config(&admin, &vec![&env, bad_config], &500_i128);
+    match result {
+        Err(Ok(err)) => assert_eq!(err, Error::InvalidPriceBounds),
+        other => panic!("expected InvalidPriceBounds, got {:?}", other),
+    }
+
+    assert!(client.get_asset_info(&asset).is_none());
+    assert!(client.get_asset_meta(&asset).is_none());
+    assert!(client.get_price_bounds(&asset).is_none());
+    assert_eq!(client.get_price_floor(&asset), None);
+    assert_eq!(client.get_max_deviation_percentage(), 1_000_i128);
 }
 
 #[test]

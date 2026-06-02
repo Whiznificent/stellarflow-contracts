@@ -86,6 +86,37 @@ pub enum DataKey {
     SlashToken,
     /// The address of the insurance reserve that receives slashed funds.
     InsuranceReserve,
+    /// The SEP-41 token contract address used for query fee collection.
+    FeeToken,
+    /// The aggregated rolling balance of incoming usage fee tokens.
+    FeeVaultBalance,
+    /// The pending reward balance for a relayer/validator.
+    ProviderRewardBalance(Address),
+
+    // ── Issue #264: per-admin signature weight ────────────────────────────────
+    /// Governance weight assigned to a specific admin (u32, 0–100).
+    ///
+    /// Used by the multi-sig weight-accumulation algorithm: before executing a
+    /// proposed action the contract sums the weights of all voters and checks
+    /// the total against `WeightThreshold`. Defaults to 1 when unset so that
+    /// legacy single-weight deployments continue to work without migration.
+    AdminWeight(Address),
+    /// Minimum cumulative weight required for a governance proposal to execute.
+    ///
+    /// When unset the contract falls back to the simple vote-count threshold
+    /// returned by `_get_required_threshold` (expressed as weight units where
+    /// each admin contributes 1 unit).
+    WeightThreshold,
+
+    // ── Issue #263: isolated OracleHealth slots ───────────────────────────────
+    /// Isolated slot: number of active relayers (whitelisted providers).
+    HealthActiveRelayers,
+    /// Isolated slot: whether the contract is currently paused.
+    HealthPaused,
+    /// Isolated slot: total number of tracked assets.
+    HealthTotalAssets,
+    /// Isolated slot: last ledger sequence number at which health was written.
+    HealthLastLedger,
     /// The ledger sequence number when the oracle last resumed from a halt.
     /// Used to ignore tracking metrics (TWAP, RecentEvents) from before the recovery.
     BaselineLedger,
@@ -118,6 +149,26 @@ pub struct AssetInfo {
     pub base_decimals: u32,
     /// Native decimal precision of the quote asset.
     pub quote_decimals: u32,
+}
+
+/// Configuration for atomic asset registration and initialization.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetRegistrationConfig {
+    /// Asset symbol for this registration.
+    pub asset: Symbol,
+    /// Short human-readable asset name.
+    pub name: Symbol,
+    /// Native decimal precision of the base asset.
+    pub base_decimals: u32,
+    /// Native decimal precision of the quote asset.
+    pub quote_decimals: u32,
+    /// Minimum allowed price for the asset pair.
+    pub min_price: i128,
+    /// Maximum allowed price for the asset pair.
+    pub max_price: i128,
+    /// Optional absolute floor price for the asset.
+    pub price_floor: Option<i128>,
 }
 
 #[contracttype]
