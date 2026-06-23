@@ -4,6 +4,9 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_sh
 pub(crate) mod nonce;
 use crate::nonce::{consume_nonce, get_nonce};
 
+pub mod validation;
+use crate::validation::check_bond_capacity;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -26,6 +29,9 @@ pub enum ContractError {
     AlreadyVoted = 16,
     ThresholdNotReached = 17,
     SignatureExpired = 18,
+    /// Validator's active locked stake is below the required bond for the
+    /// premium asset pool.  See `validation::PREMIUM_POOL_MIN_STAKE`.
+    PremiumPoolAccessDenied = 19,
 }
 
 // Contract state keys
@@ -164,12 +170,12 @@ impl TimeLockedUpgradeContract {
         env.storage().instance().get(&DATA_KEY).ok_or(ContractError::NotInitialized)
     }
 
-    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>, proposer: Address, nonce: u64, sig_expires_at: u64) -> Result<(), ContractError> {
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>, proposer: Address, nonce: u64, salt: Bytes, signature: BytesN<32>, sig_expires_at: u64) -> Result<(), ContractError> {
         if env.ledger().timestamp() > sig_expires_at { return Err(ContractError::SignatureExpired); }
         let data = Self::get_data(env.clone())?;
         if data.admin != proposer { return Err(ContractError::NotAdmin); }
         proposer.require_auth();
-        // nonce logic omitted for brevity as per provided snippet
+        consume_nonce(&env, &proposer, nonce, salt, signature)?;
         let pending = PendingUpgrade { new_wasm_hash, proposed_at: env.ledger().timestamp(), proposer };
         env.storage().instance().set(&PENDING_UPGRADE_KEY, &pending);
         Ok(())
@@ -186,6 +192,85 @@ impl TimeLockedUpgradeContract {
         }
         env.deployer().update_current_contract_wasm(pending.new_wasm_hash);
         env.storage().instance().remove(&PENDING_UPGRADE_KEY);
+        Ok(())
+    }
+
+    pub fn set_value(env: Env, value: u64, caller: Address, nonce: u64, salt: Bytes, signature: BytesN<32>, sig_expires_at: u64) -> Result<(), ContractError> {
+        if env.ledger().timestamp() > sig_expires_at { return Err(ContractError::SignatureExpired); }
+        let mut data = Self::get_data(env.clone())?;
+        if data.admin != caller { return Err(ContractError::NotAdmin); }
+        caller.require_auth();
+        consume_nonce(&env, &caller, nonce, salt, signature)?;
+        data.value = value;
+        env.storage().instance().set(&DATA_KEY, &data);
+        let asset = symbol_short!("VALUE");
+        Self::_record_heartbeat(&env, asset);
+        Ok(())
+    }
+
+    pub fn get_coordinator_nonce(env: Env, coordinator: Address) -> u64 {
+        get_nonce(&env, &coordinator)
+    }
+
+    pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+        env.storage().instance().get(&PENDING_UPGRADE_KEY)
+    }
+
+    pub fn get_upgrade_timelock_remaining(env: Env) -> Option<u64> {
+        let pending: PendingUpgrade = env.storage().instance().get(&PENDING_UPGRADE_KEY)?;
+        let elapsed = env.ledger().timestamp().saturating_sub(pending.proposed_at);
+        Some(UPGRADE_DELAY_SECONDS.saturating_sub(elapsed))
+    }
+
+    pub fn cancel_upgrade(env: Env, caller: Address) -> Result<(), ContractError> {
+        let data = Self::get_data(env.clone())?;
+        if data.admin != caller { return Err(ContractError::NotAdmin); }
+        caller.require_auth();
+        env.storage().instance().remove(&PENDING_UPGRADE_KEY);
+        Ok(())
+    }
+
+    pub fn get_last_update_timestamp(env: Env, asset: Symbol) -> Option<u64> {
+        let timestamps: Map<Symbol, u64> = env.storage().temporary().get(&HEARTBEAT_KEY).unwrap_or_else(|| Map::new(&env));
+        timestamps.get(asset)
+    }
+
+    pub fn set_heartbeat_interval(env: Env, interval: u64, caller: Address) -> Result<(), ContractError> {
+        if interval == 0 { return Err(ContractError::InvalidHeartbeatInterval); }
+        let data = Self::get_data(env.clone())?;
+        if data.admin != caller { return Err(ContractError::NotAdmin); }
+        caller.require_auth();
+        env.storage().instance().set(&HB_INTERVAL_KEY, &interval);
+        Ok(())
+    }
+
+    pub fn get_heartbeat_interval(env: Env) -> u64 {
+        Self::_get_interval(&env)
+    }
+
+    pub fn get_stake(env: Env, node: Address) -> u64 {
+        let stakes: Map<Address, u64> = env.storage().instance().get(&STAKE_REGISTRY_KEY).unwrap_or_else(|| Map::new(&env));
+        stakes.get(node).unwrap_or(0)
+    }
+
+    pub fn get_total_staked(env: Env) -> u64 {
+        env.storage().instance().get(&TOTAL_STAKED_KEY).unwrap_or(0u64)
+    }
+
+    /// Update a validator's profile for a premium asset pool.
+    ///
+    /// Enforces bond capacity: the calling `node` must have an active locked
+    /// stake of at least `validation::PREMIUM_POOL_MIN_STAKE`.  Nodes that
+    /// fall below the threshold are rejected with
+    /// `ContractError::PremiumPoolAccessDenied` (issue #453).
+    pub fn update_validator_profile(
+        env: Env,
+        node: Address,
+        pool: Symbol,
+    ) -> Result<(), ContractError> {
+        node.require_auth();
+        check_bond_capacity(&env, &node, &pool)?;
+        Self::_record_heartbeat(&env, pool);
         Ok(())
     }
 
@@ -218,6 +303,14 @@ impl TimeLockedUpgradeContract {
 
     // --- Private Helpers ---
 
+    fn assert_contract_is_active(env: &Env) -> Result<(), ContractError> {
+        if env.storage().instance().has(&DATA_KEY) {
+            Ok(())
+        } else {
+            Err(ContractError::NotInitialized)
+        }
+    }
+
     fn _record_heartbeat(env: &Env, asset: Symbol) {
         let mut timestamps: Map<Symbol, u64> = env.storage().temporary().get(&HEARTBEAT_KEY).unwrap_or_else(|| Map::new(env));
         timestamps.set(asset, env.ledger().timestamp());
@@ -241,3 +334,6 @@ impl TimeLockedUpgradeContract {
         n / 2 + 1
     }
 }
+
+#[cfg(test)]
+mod test;

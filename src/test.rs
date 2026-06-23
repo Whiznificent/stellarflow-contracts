@@ -81,7 +81,6 @@ fn test_propose_upgrade() {
 }
 
 #[test]
-#[should_panic(expected = "Invalid salt signature")]
 fn test_set_value_rejects_bad_salt_signature() {
     let env = Env::default();
     env.mock_all_auths();
@@ -94,7 +93,8 @@ fn test_set_value_rejects_bad_salt_signature() {
     let salt = Bytes::from_slice(&env, b"bad-salt");
     let bad_signature = soroban_sdk::BytesN::from_array(&env, &[9u8; 32]);
 
-    client.set_value(&42, &admin, &0, &salt, &bad_signature, &u64::MAX);
+    let result = client.try_set_value(&42, &admin, &0, &salt, &bad_signature, &u64::MAX);
+    assert!(result.is_err(), "Expected error for invalid salt signature");
 }
 
 #[test]
@@ -566,4 +566,83 @@ fn test_expired_signature_rejected() {
     let (salt2, signature2) = nonce_proof(&env, 0, b"set-value-expired");
     let result = client.try_set_value(&42, &admin, &0, &salt2, &signature2, &expired_at);
     assert_eq!(result, Err(Ok(ContractError::SignatureExpired)));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Issue #453 — Bond capacity checks for premium asset pool validator profiles
+// ═════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_update_validator_profile_succeeds_with_sufficient_stake() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    // Stake exactly the minimum required bond.
+    client.stake_and_register(&node, &crate::validation::PREMIUM_POOL_MIN_STAKE);
+
+    let pool = symbol_short!("USDC");
+    // Must not error when stake >= PREMIUM_POOL_MIN_STAKE.
+    client.update_validator_profile(&node, &pool);
+}
+
+#[test]
+fn test_update_validator_profile_blocked_below_min_stake() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    // Stake one unit below the required minimum.
+    client.stake_and_register(&node, &(crate::validation::PREMIUM_POOL_MIN_STAKE - 1));
+
+    let pool = symbol_short!("BTC");
+    let result = client.try_update_validator_profile(&node, &pool);
+    assert_eq!(result, Err(Ok(ContractError::PremiumPoolAccessDenied)));
+}
+
+#[test]
+fn test_update_validator_profile_blocked_with_zero_stake() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    // Node has never staked — locked stake is 0.
+    let pool = symbol_short!("ETH");
+    let result = client.try_update_validator_profile(&node, &pool);
+    assert_eq!(result, Err(Ok(ContractError::PremiumPoolAccessDenied)));
+}
+
+#[test]
+fn test_update_validator_profile_succeeds_above_min_stake() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    // Stake well above the minimum.
+    client.stake_and_register(&node, &5_000u64);
+
+    let pool = symbol_short!("XLM");
+    client.update_validator_profile(&node, &pool);
+    // Heartbeat for the pool asset should now be fresh.
+    assert!(client.is_data_fresh(&pool));
 }

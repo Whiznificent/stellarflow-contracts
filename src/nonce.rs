@@ -1,5 +1,7 @@
 use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env};
 
+use crate::ContractError;
+
 #[contracttype]
 pub enum NonceKey {
     State(Address),
@@ -22,15 +24,15 @@ pub fn consume_nonce(
     incoming_nonce: u64,
     salt: Bytes,
     salt_signature: BytesN<32>,
-) {
+) -> Result<(), ContractError> {
     let state = load_state(env, coordinator);
     if incoming_nonce != state.nonce {
-        panic!("Invalid nonce: expected {}, got {}", state.nonce, incoming_nonce);
+        return Err(ContractError::InvalidNonce);
     }
 
     let expected_signature = derive_salt_signature(env, incoming_nonce, salt);
     if salt_signature != expected_signature {
-        panic!("Invalid salt signature for nonce {}", incoming_nonce);
+        return Err(ContractError::InvalidNonce);
     }
 
     let next_state = NonceState {
@@ -41,6 +43,7 @@ pub fn consume_nonce(
     env.storage()
         .persistent()
         .set(&NonceKey::State(coordinator.clone()), &next_state);
+    Ok(())
 }
 
 fn load_state(env: &Env, coordinator: &Address) -> NonceState {
