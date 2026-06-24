@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Vec, Env};
+use soroban_sdk::{contracttype, Env, Map, Vec};
 use crate::ContractError;
 
 /// Basis-point denominator used when converting a BPS fraction to a multiplier.
@@ -24,12 +24,45 @@ pub fn apply_weight(value: u64, weight: u64) -> Result<u64, ContractError> {
 /// Accumulate the sum of `entry.value * entry.weight` across every entry in the
 /// dataset.  Each individual product and every running-total addition is checked
 /// so no intermediate result can wrap silently.
-pub fn compute_weighted_sum(entries: &Vec<WeightedEntry>) -> Result<(u64, u64), ContractError> {
-    let mut weighted_sum: u64 = 0;
-    let mut total_weight: u64 = 0;
+pub fn compact_duplicate_price_rows(env: &Env, entries: &Vec<WeightedEntry>) -> Result<Vec<WeightedEntry>, ContractError> {
+    let mut compacted: Vec<WeightedEntry> = Vec::new(env);
+    let mut index_by_value: Map<u64, u64> = Map::new(env);
 
     for i in 0..entries.len() {
         let entry = entries.get(i).unwrap();
+
+        if let Some(existing_index) = index_by_value.get(entry.value) {
+            let idx = existing_index as usize;
+            let existing = compacted.get(idx).unwrap();
+            let merged_weight = existing
+                .weight
+                .checked_add(entry.weight)
+                .ok_or(ContractError::Overflow)?;
+
+            compacted.set(
+                idx,
+                WeightedEntry {
+                    value: existing.value,
+                    weight: merged_weight,
+                },
+            );
+        } else {
+            let index = compacted.len() as u64;
+            compacted.push_back(entry.clone());
+            index_by_value.set(entry.value, index);
+        }
+    }
+
+    Ok(compacted)
+}
+
+pub fn compute_weighted_sum(env: &Env, entries: &Vec<WeightedEntry>) -> Result<(u64, u64), ContractError> {
+    let compacted = compact_duplicate_price_rows(env, entries)?;
+    let mut weighted_sum: u64 = 0;
+    let mut total_weight: u64 = 0;
+
+    for i in 0..compacted.len() {
+        let entry = compacted.get(i).unwrap();
 
         let weighted_value = apply_weight(entry.value, entry.weight)?;
 
@@ -50,8 +83,8 @@ pub fn compute_weighted_sum(entries: &Vec<WeightedEntry>) -> Result<(u64, u64), 
 /// Returns `(weighted_average, total_weight)`.  Division is always safe once
 /// the checked accumulation above has succeeded, but we guard the zero-weight
 /// edge case to avoid a panic.
-pub fn compute_weighted_average(entries: &Vec<WeightedEntry>) -> Result<u64, ContractError> {
-    let (weighted_sum, total_weight) = compute_weighted_sum(entries)?;
+pub fn compute_weighted_average(env: &Env, entries: &Vec<WeightedEntry>) -> Result<u64, ContractError> {
+    let (weighted_sum, total_weight) = compute_weighted_sum(env, entries)?;
 
     if total_weight == 0 {
         return Ok(0);
@@ -143,7 +176,7 @@ mod tests {
     fn test_weighted_sum_single_entry() {
         let env = Env::default();
         let entries = make_entries(&env, &[(200, 3)]);
-        let (ws, tw) = compute_weighted_sum(&entries).unwrap();
+        let (ws, tw) = compute_weighted_sum(&env, &entries).unwrap();
         assert_eq!(ws, 600);
         assert_eq!(tw, 3);
     }
@@ -153,16 +186,26 @@ mod tests {
         let env = Env::default();
         // (100 * 10) + (200 * 5) = 1000 + 1000 = 2000, total_weight = 15
         let entries = make_entries(&env, &[(100, 10), (200, 5)]);
-        let (ws, tw) = compute_weighted_sum(&entries).unwrap();
+        let (ws, tw) = compute_weighted_sum(&env, &entries).unwrap();
         assert_eq!(ws, 2_000);
         assert_eq!(tw, 15);
+    }
+
+    #[test]
+    fn test_weighted_sum_duplicate_price_rows_compact() {
+        let env = Env::default();
+        // Same price value appears twice; weights should merge before weighted sum.
+        let entries = make_entries(&env, &[(100, 10), (100, 5), (200, 5)]);
+        let (ws, tw) = compute_weighted_sum(&env, &entries).unwrap();
+        assert_eq!(ws, 2_000);
+        assert_eq!(tw, 20);
     }
 
     #[test]
     fn test_weighted_sum_empty_dataset() {
         let env = Env::default();
         let entries = make_entries(&env, &[]);
-        let (ws, tw) = compute_weighted_sum(&entries).unwrap();
+        let (ws, tw) = compute_weighted_sum(&env, &entries).unwrap();
         assert_eq!(ws, 0);
         assert_eq!(tw, 0);
     }
@@ -171,7 +214,7 @@ mod tests {
     fn test_weighted_sum_overflow_on_product() {
         let env = Env::default();
         let entries = make_entries(&env, &[(u64::MAX, 2)]);
-        let result = compute_weighted_sum(&entries);
+        let result = compute_weighted_sum(&env, &entries);
         assert_eq!(result, Err(ContractError::Overflow));
     }
 
@@ -183,7 +226,7 @@ mod tests {
         let entries = make_entries(&env, &[(half, 2), (half, 2)]);
         // half*2 = u64::MAX-1, second half*2 would overflow the running sum
         // u64::MAX - 1 + (u64::MAX - 1) overflows
-        let result = compute_weighted_sum(&entries);
+        let result = compute_weighted_sum(&env, &entries);
         assert_eq!(result, Err(ContractError::Overflow));
     }
 
@@ -194,14 +237,14 @@ mod tests {
         let env = Env::default();
         // (1000 * 3 + 2000 * 1) / (3 + 1) = 5000 / 4 = 1250
         let entries = make_entries(&env, &[(1_000, 3), (2_000, 1)]);
-        assert_eq!(compute_weighted_average(&entries).unwrap(), 1_250);
+        assert_eq!(compute_weighted_average(&env, &entries).unwrap(), 1_250);
     }
 
     #[test]
     fn test_weighted_average_zero_total_weight() {
         let env = Env::default();
         let entries = make_entries(&env, &[(500, 0), (300, 0)]);
-        assert_eq!(compute_weighted_average(&entries).unwrap(), 0);
+        assert_eq!(compute_weighted_average(&env, &entries).unwrap(), 0);
     }
 
     // --- compute_quorum_threshold ---
