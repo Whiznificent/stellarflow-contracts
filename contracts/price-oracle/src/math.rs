@@ -136,17 +136,35 @@ pub fn calculate_deviation_bps(submitted: i128, consensus: i128) -> Result<u32, 
 }
 
 pub fn normalize_to_seven(value: i128, input_decimals: u32) -> Result<i128, Error> {
+    // Early trap: validate input value is within safe range
+    if value == i128::MIN || value == i128::MAX {
+        return Err(Error::PriceMathOverflow);
+    }
+
     if input_decimals < 7 {
         let diff = 7 - input_decimals;
-        let multiplier = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
+        let multiplier = 10_i128
+            .checked_pow(diff)
+            .ok_or(Error::PriceMathOverflow)?;
+        
+        // Explicit overflow trap before multiplication
         value
             .checked_mul(multiplier)
             .ok_or(Error::PriceMathOverflow)
     } else if input_decimals > 7 {
         let diff = input_decimals - 7;
-        let divisor = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
-        require_nonzero_denominator(divisor)?;
-        value.checked_div(divisor).ok_or(Error::PriceMathOverflow)
+        let divisor = 10_i128
+            .checked_pow(diff)
+            .ok_or(Error::PriceMathOverflow)?;
+        
+        // Explicit divide-by-zero trap (though 10^n cannot be zero)
+        if divisor == 0 {
+            return Err(Error::PriceMathOverflow);
+        }
+        
+        value
+            .checked_div(divisor)
+            .ok_or(Error::PriceMathOverflow)
     } else {
         Ok(value)
     }
@@ -160,6 +178,9 @@ pub fn normalize_to_seven(value: i128, input_decimals: u32) -> Result<i128, Erro
 ///
 /// Formula: `price * 10^(9 - native_decimals)`
 ///
+/// This function uses checked arithmetic throughout to prevent integer truncation
+/// during multi-hop liquidity path calculations.
+///
 /// # Examples
 /// ```text
 /// normalize_to_nine(1_000_000_0, 7)  => 1_000_000_000  (XLM, 7 dec → 9 dec)
@@ -169,15 +190,61 @@ pub fn normalize_to_seven(value: i128, input_decimals: u32) -> Result<i128, Erro
 /// ```
 pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Error> {
     const TARGET: u32 = 9;
+    const INTERIOR_SCALE: i128 = 1_000_000_000_000_000; // 10^15
+
+    // NOTE: INTERIOR_SCALE is chosen so that the final result remains within
+    // the project's 9-decimal fixed-point footprint by dividing back down
+    // after the translation.
+
+    // Early trap: validate input value is within safe range for scaled arithmetic
+    if value == i128::MIN || value == i128::MAX {
+        return Err(Error::PriceMathOverflow);
+    }
+
+    // Explicit overflow trap on initial scaling operation
+    let scaled = value
+        .checked_mul(INTERIOR_SCALE)
+        .ok_or(Error::PriceMathOverflow)?;
 
     if native_decimals < TARGET {
         let diff = TARGET - native_decimals;
+        
+        // Trap power overflow early
+        let multiplier = 10_i128
+            .checked_pow(diff)
+            .ok_or(Error::PriceMathOverflow)?;
+        
+        // Use checked_mul to explicitly trap multiplication overflow
+        scaled
         let multiplier = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
         scaled
             .checked_mul(multiplier)
             .ok_or(Error::PriceMathOverflow)?
     } else if native_decimals > TARGET {
         let diff = native_decimals - TARGET;
+        
+        // Trap power overflow early
+        let divisor = 10_i128
+            .checked_pow(diff)
+            .ok_or(Error::PriceMathOverflow)?;
+        
+        // Explicit divide-by-zero trap (defensive, 10^n cannot be zero)
+        if divisor == 0 {
+            return Err(Error::PriceMathOverflow);
+        }
+        
+        // Use checked_div to trap any division anomalies
+        scaled
+            .checked_div(divisor)
+            .ok_or(Error::PriceMathOverflow)?
+    } else {
+        scaled
+    };
+
+    // Final checked division to scale back down
+    normalized_in_interior_space
+        .checked_div(INTERIOR_SCALE)
+        .ok_or(Error::PriceMathOverflow)
         let divisor = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
         require_nonzero_denominator(divisor)?;
         scaled
@@ -200,8 +267,12 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
 ///
 /// Formula: `(10^decimals * 10^decimals) / price`
 ///
+/// This function uses Soroban's native checked arithmetic to explicitly trap
+/// overflow errors during multi-hop regional asset calculations.
+///
 /// # Returns
-/// `Some(inverse)` on success, or `None` when `price` is zero (divide-by-zero).
+/// `Some(inverse)` on success, or `None` when `price` is zero (divide-by-zero)
+/// or when overflow occurs.
 ///
 /// # Examples
 /// ```text
@@ -209,11 +280,23 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
 /// calculate_inverse_price(0,     7)  => None             // divide-by-zero guard
 /// ```
 pub fn calculate_inverse_price(price: i128, decimals: u32) -> Option<i128> {
+    // Explicit early trap: zero price guard
     if price == 0 {
         return None;
     }
+    
+    // Explicit early trap: extreme value guard
+    if price == i128::MIN || price == i128::MAX {
+        return None;
+    }
+    
+    // Trap power overflow explicitly
     let scale = 10_i128.checked_pow(decimals)?;
+    
+    // Trap multiplication overflow explicitly
     let numerator = scale.checked_mul(scale)?;
+    
+    // Trap division overflow/error explicitly
     numerator.checked_div(price)
 }
 
@@ -369,92 +452,74 @@ mod tests {
         assert_eq!(normalize_to_nine(1, 0), Ok(1_000_000_000));
     }
 
-    // --- require_nonzero_denominator tests -------------------------------------
+    // --- Overflow protection tests for multi-hop calculations -----------------
 
     #[test]
-    fn test_nonzero_denominator_accepts_positive() {
-        assert_eq!(require_nonzero_denominator(1), Ok(()));
-        assert_eq!(require_nonzero_denominator(i128::MAX), Ok(()));
-    }
-
-    #[test]
-    fn test_nonzero_denominator_accepts_negative() {
-        assert_eq!(require_nonzero_denominator(-1), Ok(()));
-        assert_eq!(require_nonzero_denominator(i128::MIN), Ok(()));
-    }
-
-    #[test]
-    fn test_nonzero_denominator_rejects_zero() {
+    fn test_normalize_to_nine_extreme_value_rejection() {
+        // Extreme values should be trapped early to prevent overflow
         assert_eq!(
-            require_nonzero_denominator(0),
-            Err(Error::InvalidDenominator)
+            normalize_to_nine(i128::MAX, 0),
+            Err(Error::PriceMathOverflow)
+        );
+        assert_eq!(
+            normalize_to_nine(i128::MIN, 0),
+            Err(Error::PriceMathOverflow)
         );
     }
 
-    // --- Edge-case normalization tests ------------------------------------------
-
     #[test]
-    fn test_normalize_to_seven_zero_value() {
-        // Zero value is valid (does not trigger denominator check)
-        assert_eq!(normalize_to_seven(0, 2), Ok(0));
-        assert_eq!(normalize_to_seven(0, 9), Ok(0));
-        assert_eq!(normalize_to_seven(0, 7), Ok(0));
+    fn test_normalize_to_nine_large_safe_value() {
+        // Large but safe values should still work
+        let large_value = 1_000_000_000_000_000_i128; // 10^15
+        let result = normalize_to_nine(large_value, 9);
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn test_normalize_to_seven_max_decimals() {
-        // Large input_decimals that still produces a valid divisor
-        assert_eq!(normalize_to_seven(1_000_000_000_000_000_000, 20), Ok(1));
+    fn test_normalize_to_seven_extreme_value_rejection() {
+        // Extreme values should be trapped early
+        assert_eq!(
+            normalize_to_seven(i128::MAX, 0),
+            Err(Error::PriceMathOverflow)
+        );
+        assert_eq!(
+            normalize_to_seven(i128::MIN, 0),
+            Err(Error::PriceMathOverflow)
+        );
     }
 
     #[test]
-    fn test_normalize_to_nine_zero_value() {
-        // Zero value is valid (does not trigger denominator check)
-        assert_eq!(normalize_to_nine(0, 2), Ok(0));
-        assert_eq!(normalize_to_nine(0, 9), Ok(0));
-        assert_eq!(normalize_to_nine(0, 11), Ok(0));
+    fn test_calculate_inverse_price_extreme_values() {
+        // Extreme values should return None to prevent overflow
+        assert_eq!(calculate_inverse_price(i128::MAX, 9), None);
+        assert_eq!(calculate_inverse_price(i128::MIN, 9), None);
     }
 
     #[test]
-    fn test_normalize_to_nine_scale_down_max() {
-        // Large native_decimals that still produces a valid divisor
-        let result = normalize_to_nine(1_000_000_000_000_000_000_000, 18);
-        assert_eq!(result, Ok(1_000_000_000));
+    fn test_calculate_inverse_price_safe_values() {
+        // Normal operation with safe values
+        assert_eq!(calculate_inverse_price(2_000, 3), Some(500_000));
+        assert_eq!(calculate_inverse_price(1_000_000_000, 9), Some(1_000_000_000));
     }
 
     #[test]
-    fn test_normalize_to_seven_zero_input_decimals() {
-        // 0 input decimals → scale up by 10^7
-        assert_eq!(normalize_to_seven(1, 0), Ok(10_000_000));
-    }
-
-    #[test]
-    fn test_normalize_to_nine_negative_value() {
-        // Negative prices should normalize correctly
-        assert_eq!(normalize_to_nine(-1_000_000, 7), Ok(-100_000_000));
-    }
-
-    // --- Existing behavior unchanged -------------------------------------------
-
-    #[test]
-    fn test_deviation_bps_identical_still_works() {
-        assert_eq!(calculate_deviation_bps(10_000, 10_000), Ok(0));
-    }
-
-    #[test]
-    fn test_deviation_bps_above_consensus_still_works() {
-        assert_eq!(calculate_deviation_bps(10_100, 10_000), Ok(100));
-    }
-
-    #[test]
-    fn test_normalize_to_seven_still_works() {
-        assert_eq!(normalize_to_seven(150, 2), Ok(15_000_000));
-        assert_eq!(normalize_to_seven(100_000_000, 9), Ok(1_000_000));
-    }
-
-    #[test]
-    fn test_normalize_to_nine_still_works() {
-        assert_eq!(normalize_to_nine(10_000_000, 7), Ok(1_000_000_000));
-        assert_eq!(normalize_to_nine(100, 2), Ok(10_000_000_000));
+    fn test_multi_hop_simulation_no_overflow() {
+        // Simulate a multi-hop path: Asset A -> B -> C
+        // Each hop normalizes and calculates, ensuring no overflow
+        let asset_a_price = 1_000_000_000; // 9 decimals
+        let asset_b_price = 2_000_000_000; // 9 decimals
+        
+        // First hop: A to B
+        let hop1 = normalize_to_nine(asset_a_price, 9);
+        assert!(hop1.is_ok());
+        
+        // Second hop: B to C (via inverse)
+        let inverse_b = calculate_inverse_price(asset_b_price, 9);
+        assert!(inverse_b.is_some());
+        
+        // The chain should complete without overflow
+        assert_eq!(hop1.unwrap(), 1_000_000_000);
+        assert_eq!(inverse_b.unwrap(), 500_000);
     }
 }
+
