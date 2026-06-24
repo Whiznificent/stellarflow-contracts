@@ -116,6 +116,7 @@ use crate::Error;
 /// calculate_deviation_bps(10_000, 10_000) => Ok(0)     // identical prices
 /// calculate_deviation_bps(500, 0)         => Err(DeviationConsensusZero)
 /// ```
+#[inline]
 pub fn calculate_deviation_bps(submitted: i128, consensus: i128) -> Result<u32, Error> {
     if consensus == 0 {
         return Err(Error::DeviationConsensusZero);
@@ -135,6 +136,7 @@ pub fn calculate_deviation_bps(submitted: i128, consensus: i128) -> Result<u32, 
     Ok(bps.min(u32::MAX as i128) as u32)
 }
 
+#[inline]
 pub fn normalize_to_seven(value: i128, input_decimals: u32) -> Result<i128, Error> {
     if input_decimals < 7 {
         let diff = 7 - input_decimals;
@@ -167,6 +169,7 @@ pub fn normalize_to_seven(value: i128, input_decimals: u32) -> Result<i128, Erro
 /// normalize_to_nine(1_000_000_000, 9) => 1_000_000_000  (already 9 dec, no-op)
 /// normalize_to_nine(1_000_000_000_00, 11) => 1_000_000_000 (scale down)
 /// ```
+#[inline]
 pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Error> {
     const TARGET: u32 = 9;
 
@@ -208,6 +211,7 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
 /// calculate_inverse_price(2_000, 3)  => Some(500_000)   // 1/2.000 = 0.500 (scaled)
 /// calculate_inverse_price(0,     7)  => None             // divide-by-zero guard
 /// ```
+#[inline]
 pub fn calculate_inverse_price(price: i128, decimals: u32) -> Option<i128> {
     if price == 0 {
         return None;
@@ -222,6 +226,7 @@ pub fn calculate_inverse_price(price: i128, decimals: u32) -> Option<i128> {
 /// Returns `Ok(())` when `n != 0`, or `Err(Error::InvalidDenominator)` when `n` is zero.
 /// Call this proactively before every division to prevent runtime panics
 /// and to provide a clear error signal to callers.
+#[inline]
 pub fn require_nonzero_denominator(n: i128) -> Result<(), Error> {
     if n == 0 {
         Err(Error::InvalidDenominator)
