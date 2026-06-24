@@ -108,6 +108,23 @@ pub enum DataKey {
     /// each admin contributes 1 unit).
     WeightThreshold,
 
+    // ── Liquidity validation: flash loan manipulation prevention ──────────────
+    /// Minimum liquidity threshold required for price submissions (in stroops).
+    ///
+    /// When set, price submissions must include liquidity data that meets or
+    /// exceeds this threshold. Submissions from thin markets are rejected early
+    /// to prevent flash loan price manipulation attacks.
+    LiquidityThreshold(Symbol),
+    /// Last reported liquidity value from a provider for a specific asset.
+    ///
+    /// Tracked for reputation scoring and slash enforcement. Key structure:
+    /// (provider_address, asset_symbol) => liquidity_value_stroops.
+    ProviderReportedLiquidity(Address, Symbol),
+    /// Timestamp of the last successful liquidity validation for an asset.
+    ///
+    /// Used for audit trails and monitoring liquidity validation frequency.
+    LastLiquidityValidation(Symbol),
+
     // ── Issue #263: isolated OracleHealth slots ───────────────────────────────
     /// Isolated slot: number of active relayers (whitelisted providers).
     HealthActiveRelayers,
