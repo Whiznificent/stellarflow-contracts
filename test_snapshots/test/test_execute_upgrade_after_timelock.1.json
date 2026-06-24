@@ -42,6 +42,12 @@
                   "u64": 0
                 },
                 {
+                  "bytes": "70726f706f73652d757067726164652d31"
+                },
+                {
+                  "bytes": "8a2c913b9e3781e44d8b085209d3e63d0124a75442a44e08e7f7a35f16fe6df7"
+                },
+                {
                   "u64": 18446744073709551615
                 }
               ]
@@ -70,7 +76,7 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "Nonce"
+                  "symbol": "State"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -90,7 +96,7 @@
                 "key": {
                   "vec": [
                     {
-                      "symbol": "Nonce"
+                      "symbol": "State"
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -99,7 +105,24 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "u64": 1
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "nonce"
+                      },
+                      "val": {
+                        "u64": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "salt_signature"
+                      },
+                      "val": {
+                        "bytes": "8a2c913b9e3781e44d8b085209d3e63d0124a75442a44e08e7f7a35f16fe6df7"
+                      }
+                    }
+                  ]
                 }
               }
             },
@@ -364,6 +387,12 @@
                 },
                 {
                   "u64": 0
+                },
+                {
+                  "bytes": "70726f706f73652d757067726164652d31"
+                },
+                {
+                  "bytes": "8a2c913b9e3781e44d8b085209d3e63d0124a75442a44e08e7f7a35f16fe6df7"
                 },
                 {
                   "u64": 18446744073709551615

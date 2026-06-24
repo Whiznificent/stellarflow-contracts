@@ -1136,58 +1136,7 @@ impl PriceOracle {
         if crate::auth::_is_halted(&env) {
             panic_with_error!(&env, ContractError::EmergencyHalted);
         }
-        if components.is_empty() {
-            return Err(ContractError::AssetNotFound);
-        }
-
-        let mut total_weighted_price: i128 = 0;
-        let mut total_weight: u32 = 0;
-
-        for component in components.iter() {
-            // Boundary check (issue #278): reject uninitialized asset pairs before
-            // entering the calculation loop to prevent runtime errors on stale slots.
-            if !env
-                .storage()
-                .persistent()
-                .has(&DataKey::TrackedAsset(component.asset.clone()))
-            {
-                return Err(ContractError::AssetNotFound);
-            }
-
-            // Reject zero-weight components to avoid silently skewing the index.
-            if component.weight == 0 {
-                return Err(ContractError::InvalidWeight);
-            }
-
-            // Fetch the verified price.
-            // If any asset is missing or stale, this cleanly propagates ContractError::AssetNotFound.
-            let price_data = Self::get_price(env.clone(), component.asset.clone(), true)?;
-
-            let weight_i128: i128 = component.weight.into();
-
-            // Safe math to prevent overflow panics
-            let weighted_val = price_data
-                .price
-                .checked_mul(weight_i128)
-                .ok_or(ContractError::InvalidPrice)?;
-
-            total_weighted_price = total_weighted_price
-                .checked_add(weighted_val)
-                .ok_or(ContractError::InvalidPrice)?;
-
-            total_weight = total_weight
-                .checked_add(component.weight)
-                .unwrap_or(total_weight);
-        }
-
-        if total_weight == 0 {
-            return Err(ContractError::InvalidWeight);
-        }
-
-        // Calculate final index price.
-        // Because all stored prices are 9-decimal normalized, the division preserves the 9-decimal standard.
-        let index_price = total_weighted_price.checked_div(total_weight as i128).ok_or(ContractError::PriceMathOverflow)?;
-        Ok(index_price)
+        validation::calculate_index_price(&env, &components)
     }
 
     pub fn init_admin(env: Env, admin: Address) {
@@ -1338,27 +1287,7 @@ impl PriceOracle {
         admin.require_auth();
         crate::auth::_require_authorized(&env, &admin);
 
-        if configs.len() == 0 {
-            return Err(ContractError::InvalidAssetConfig);
-        }
-
-        if max_deviation_bps <= 0 || max_deviation_bps > 10_000 {
-            return Err(ContractError::InvalidMaxDeviation);
-        }
-
-        for config in configs.iter() {
-            if config.min_price <= 0
-                || config.max_price <= 0
-                || config.min_price > config.max_price
-            {
-                return Err(ContractError::InvalidPriceBounds);
-            }
-            if let Some(price_floor) = config.price_floor {
-                if price_floor <= 0 || price_floor > config.max_price {
-                    return Err(ContractError::InvalidPriceBounds);
-                }
-            }
-        }
+        validation::validate_asset_registration_configs(&configs, max_deviation_bps)?;
 
         if let Some(existing) = env
             .storage()
@@ -2167,16 +2096,7 @@ impl PriceOracle {
     /// by snapshot tests and migration tooling. It does **not** touch
     /// `VerifiedPrice` or `CommunityPrice` buckets; use `remove_asset` for that.
     pub fn clear_assets(env: Env, assets: soroban_sdk::Vec<Symbol>) -> Result<(), ContractError> {
-        if assets.len() > MAX_CLEAR_ASSETS {
-            return Err(ContractError::TooManyAssets);
-        }
-
-        let storage = env.storage().persistent();
-        for asset in assets.iter() {
-            storage.remove(&DataKey::Price(asset));
-        }
-
-        Ok(())
+        validation::clear_assets(&env, &assets)
     }
 
     /// Update the price for a specific asset (authorized backend relayer function).
@@ -3177,16 +3097,17 @@ impl PriceOracle {
     ///
     /// # Returns
     /// The action ID that can be used to vote on this proposal
-    /// Set the minimum number of votes required for a governance proposal to reach quorum (issue #292).
-    /// Admin-only. Default is 1 (no floor) when unset.
+    /// Set the minimum number of votes required for a governance proposal to
+    /// reach quorum (issue #292).
+    ///
+    /// Admin-only. Default is 1 (no floor) when unset. Values below the hard
+    /// floor are rejected, and the getter clamps legacy low storage to the
+    /// same minimum.
     pub fn set_min_quorum_threshold(
         env: Env,
         admin: Address,
         threshold: u32,
     ) -> Result<(), ContractError> {
-    /// Admin-only. Values below the hard floor are rejected, and the getter
-    /// clamps legacy low storage to the same minimum.
-    pub fn set_min_quorum_threshold(env: Env, admin: Address, threshold: u32) -> Result<(), ContractError> {
         _require_not_destroyed(&env);
         _require_initialized(&env);
         crate::auth::_require_not_frozen(&env);

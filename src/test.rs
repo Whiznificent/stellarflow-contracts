@@ -1,4 +1,4 @@
-use soroban_sdk::{Bytes, Env, Symbol, symbol_short, IntoVal};
+use soroban_sdk::{Bytes, Env, symbol_short};
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
 use crate::{
     ContractError, TimeLockedUpgradeContract, TimeLockedUpgradeContractClient,
@@ -81,7 +81,6 @@ fn test_propose_upgrade() {
 }
 
 #[test]
-#[should_panic(expected = "Invalid salt signature")]
 fn test_set_value_rejects_bad_salt_signature() {
     let env = Env::default();
     env.mock_all_auths();
@@ -94,7 +93,8 @@ fn test_set_value_rejects_bad_salt_signature() {
     let salt = Bytes::from_slice(&env, b"bad-salt");
     let bad_signature = soroban_sdk::BytesN::from_array(&env, &[9u8; 32]);
 
-    client.set_value(&42, &admin, &0, &salt, &bad_signature, &u64::MAX);
+    let result = client.try_set_value(&42, &admin, &0, &salt, &bad_signature, &u64::MAX);
+    assert_eq!(result, Err(Ok(ContractError::InvalidSaltSignature)));
 }
 
 #[test]

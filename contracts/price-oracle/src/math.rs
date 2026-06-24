@@ -189,11 +189,6 @@ pub fn normalize_to_seven(value: i128, input_decimals: u32) -> Result<i128, Erro
 /// normalize_to_nine(1_000_000_000_00, 11) => 1_000_000_000 (scale down)
 /// ```
 pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Error> {
-    // This normalization is a critical fixed-point boundary.
-    // To reduce rounding/truncation drift when this function is used
-    // inside multi-step rate translations, we do the multiply/divide
-    // sequence in a temporarily up-scaled space.
-
     const TARGET: u32 = 9;
     const INTERIOR_SCALE: i128 = 1_000_000_000_000_000; // 10^15
 
@@ -211,7 +206,7 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
         .checked_mul(INTERIOR_SCALE)
         .ok_or(Error::PriceMathOverflow)?;
 
-    let normalized_in_interior_space = if native_decimals < TARGET {
+    if native_decimals < TARGET {
         let diff = TARGET - native_decimals;
         
         // Trap power overflow early
@@ -221,6 +216,8 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
         
         // Use checked_mul to explicitly trap multiplication overflow
         scaled
+        let multiplier = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
+        value
             .checked_mul(multiplier)
             .ok_or(Error::PriceMathOverflow)?
     } else if native_decimals > TARGET {
@@ -248,6 +245,11 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
     normalized_in_interior_space
         .checked_div(INTERIOR_SCALE)
         .ok_or(Error::PriceMathOverflow)
+        let divisor = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
+        value.checked_div(divisor).ok_or(Error::PriceMathOverflow)
+    } else {
+        Ok(value)
+    }
 }
 
 /// Calculate the inverse of a price (e.g., NGN/XLM → XLM/NGN).
