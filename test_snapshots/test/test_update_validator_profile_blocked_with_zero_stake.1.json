@@ -212,28 +212,16 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "set_value"
+                "symbol": "update_validator_profile"
               }
             ],
             "data": {
               "vec": [
                 {
-                  "u64": 42
-                },
-                {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
-                  "u64": 0
-                },
-                {
-                  "bytes": "7365742d76616c75652d756e61757468"
-                },
-                {
-                  "bytes": "1b3c28b12c2e64c124ef0f47c4aaf0654419c45c8791e9d66c8294f2b0b3a647"
-                },
-                {
-                  "u64": 18446744073709551615
+                  "symbol": "ETH"
                 }
               ]
             }
@@ -254,12 +242,12 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "set_value"
+                "symbol": "update_validator_profile"
               }
             ],
             "data": {
               "error": {
-                "contract": 3
+                "contract": 19
               }
             }
           }
@@ -280,7 +268,7 @@
               },
               {
                 "error": {
-                  "contract": 3
+                  "contract": 19
                 }
               }
             ],
@@ -305,7 +293,7 @@
               },
               {
                 "error": {
-                  "contract": 3
+                  "contract": 19
                 }
               }
             ],
@@ -315,27 +303,15 @@
                   "string": "contract try_call failed"
                 },
                 {
-                  "symbol": "set_value"
+                  "symbol": "update_validator_profile"
                 },
                 {
                   "vec": [
                     {
-                      "u64": 42
-                    },
-                    {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                     },
                     {
-                      "u64": 0
-                    },
-                    {
-                      "bytes": "7365742d76616c75652d756e61757468"
-                    },
-                    {
-                      "bytes": "1b3c28b12c2e64c124ef0f47c4aaf0654419c45c8791e9d66c8294f2b0b3a647"
-                    },
-                    {
-                      "u64": 18446744073709551615
+                      "symbol": "ETH"
                     }
                   ]
                 }
