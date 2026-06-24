@@ -217,7 +217,7 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
         // Use checked_mul to explicitly trap multiplication overflow
         scaled
         let multiplier = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
-        value
+        scaled
             .checked_mul(multiplier)
             .ok_or(Error::PriceMathOverflow)?
     } else if native_decimals > TARGET {
@@ -246,10 +246,18 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
         .checked_div(INTERIOR_SCALE)
         .ok_or(Error::PriceMathOverflow)
         let divisor = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
-        value.checked_div(divisor).ok_or(Error::PriceMathOverflow)
+        require_nonzero_denominator(divisor)?;
+        scaled
+            .checked_div(divisor)
+            .ok_or(Error::PriceMathOverflow)?
     } else {
-        Ok(value)
-    }
+        scaled
+    };
+
+    require_nonzero_denominator(INTERIOR_SCALE)?;
+    normalized_in_interior_space
+        .checked_div(INTERIOR_SCALE)
+        .ok_or(Error::PriceMathOverflow)
 }
 
 /// Calculate the inverse of a price (e.g., NGN/XLM → XLM/NGN).
@@ -290,6 +298,19 @@ pub fn calculate_inverse_price(price: i128, decimals: u32) -> Option<i128> {
     
     // Trap division overflow/error explicitly
     numerator.checked_div(price)
+}
+
+/// Require that a denominator is non-zero before performing division.
+///
+/// Returns `Ok(())` when `n != 0`, or `Err(Error::InvalidDenominator)` when `n` is zero.
+/// Call this proactively before every division to prevent runtime panics
+/// and to provide a clear error signal to callers.
+pub fn require_nonzero_denominator(n: i128) -> Result<(), Error> {
+    if n == 0 {
+        Err(Error::InvalidDenominator)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

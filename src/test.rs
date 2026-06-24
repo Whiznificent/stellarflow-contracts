@@ -1,8 +1,8 @@
 use soroban_sdk::{Bytes, Env, symbol_short};
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
 use crate::{
-    ContractError, TimeLockedUpgradeContract, TimeLockedUpgradeContractClient,
-    DEFAULT_HEARTBEAT_INTERVAL, UPGRADE_DELAY_SECONDS,
+    ContractError, StakingTier, StakingTierConfig, TimeLockedUpgradeContract,
+    TimeLockedUpgradeContractClient, DEFAULT_HEARTBEAT_INTERVAL, UPGRADE_DELAY_SECONDS,
 };
 
 /// Helper: advance the ledger timestamp by `delta` seconds.
@@ -464,6 +464,120 @@ fn test_unstake_removes_node_and_updates_total() {
 
     assert_eq!(returned, 1000u64);
     assert_eq!(client.get_stake(&node), 0u64);
+    assert_eq!(client.get_total_staked(), 0u64);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Dynamic Staking Tier tests (Issue #300)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_regional_feed_allows_lower_stake_than_premier_feed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    let regional = symbol_short!("KES");
+    let premier = symbol_short!("NGN");
+
+    client.set_asset_feed_metrics(&admin, &regional, &10, &100);
+    client.set_asset_feed_metrics(&admin, &premier, &80, &1_000);
+
+    assert_eq!(client.get_staking_tier(&regional), StakingTier::Regional);
+    assert_eq!(client.get_staking_tier(&premier), StakingTier::Premier);
+    assert!(client.get_required_stake(&regional) < client.get_required_stake(&premier));
+
+    let regional_record = client.stake_and_register_for_feed(&node, &regional, &100u64);
+    assert_eq!(regional_record.tier, StakingTier::Regional);
+    assert_eq!(client.get_feed_stake(&node, &regional), 100u64);
+
+    let premier_result = client.try_stake_and_register_for_feed(&node, &premier, &100u64);
+    assert_eq!(
+        premier_result,
+        Err(Ok(ContractError::InsufficientStakeForTier))
+    );
+
+    let premier_record = client.stake_and_register_for_feed(&node, &premier, &10_000u64);
+    assert_eq!(premier_record.tier, StakingTier::Premier);
+    assert_eq!(client.get_feed_stake(&node, &premier), 10_000u64);
+}
+
+#[test]
+fn test_corridor_volume_bumps_tier_requirements() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    let asset = symbol_short!("GHS");
+    client.set_asset_feed_metrics(&admin, &asset, &10, &200);
+
+    assert_eq!(client.get_staking_tier(&asset), StakingTier::Regional);
+
+    client.add_corridor_fees(&asset, &2_000_000_000u64, &0u64);
+
+    assert_eq!(client.get_staking_tier(&asset), StakingTier::Standard);
+    assert_eq!(client.get_required_stake(&asset), 1_000u64);
+}
+
+#[test]
+fn test_custom_tier_config_is_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    client.set_staking_tier_config(
+        &admin,
+        &StakingTierConfig {
+            regional_min_stake: 250,
+            standard_min_stake: 2_500,
+            premier_min_stake: 25_000,
+        },
+    );
+
+    let asset = symbol_short!("ZAR");
+    client.set_asset_feed_metrics(&admin, &asset, &10, &100);
+
+    assert_eq!(client.get_required_stake(&asset), 250u64);
+
+    let result = client.try_stake_and_register_for_feed(&node, &asset, &200u64);
+    assert_eq!(result, Err(Ok(ContractError::InsufficientStakeForTier)));
+
+    client.stake_and_register_for_feed(&node, &asset, &250u64);
+    assert_eq!(client.get_feed_stake(&node, &asset), 250u64);
+}
+
+#[test]
+fn test_unstake_from_feed_updates_totals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    let asset = symbol_short!("UGX");
+    client.set_asset_feed_metrics(&admin, &asset, &10, &100);
+    client.stake_and_register_for_feed(&node, &asset, &100u64);
+
+    assert_eq!(client.get_total_staked(), 100u64);
+    assert_eq!(client.unstake_from_feed(&node, &asset), 100u64);
+    assert_eq!(client.get_feed_stake(&node, &asset), 0u64);
     assert_eq!(client.get_total_staked(), 0u64);
 }
 

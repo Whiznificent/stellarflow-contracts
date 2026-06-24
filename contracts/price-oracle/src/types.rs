@@ -88,8 +88,10 @@ pub enum DataKey {
     InsuranceReserve,
     /// The SEP-41 token contract address used for query fee collection.
     FeeToken,
-    /// The aggregated rolling balance of incoming usage fee tokens.
+    /// Legacy aggregate fee vault balance; retained for migration compatibility only.
     FeeVaultBalance,
+    /// Asset-isolated fee vault balance keyed by the SEP-41 fee token address.
+    CorridorFeeVaultBalance(Address),
     /// The pending reward balance for a relayer/validator.
     ProviderRewardBalance(Address),
 

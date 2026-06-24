@@ -5,6 +5,12 @@ pub(crate) mod nonce;
 use crate::nonce::{consume_nonce, get_nonce};
 
 pub mod consensus;
+pub mod staking_tiers;
+
+pub use staking_tiers::{AssetFeedMetrics, StakingTier, StakingTierConfig};
+use staking_tiers::{
+    assign_tier, effective_volume_score, required_stake_for_tier, validate_tier_config,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -29,6 +35,12 @@ pub enum ContractError {
     ThresholdNotReached = 17,
     SignatureExpired = 18,
     InvalidSaltSignature = 19,
+    /// Stake amount is below the tier minimum for the target currency feed.
+    InsufficientStakeForTier = 20,
+    /// Staking tier configuration is invalid or non-monotonic.
+    InvalidTierConfig = 21,
+    /// Node is already registered for this currency feed.
+    FeedAlreadyRegistered = 22,
 }
 
 // Contract state keys
@@ -42,6 +54,10 @@ const HB_INTERVAL_KEY: Symbol = symbol_short!("HBINTV");
 const DEFAULT_HEARTBEAT_INTERVAL: u64 = 5 * 60;
 const SIGNERS_KEY: Symbol = symbol_short!("SIGNERS");
 const REVOCATION_KEY: Symbol = symbol_short!("REVOKE");
+const NODE_PROFILES_KEY: Symbol = symbol_short!("NODES");
+const PLATFORM_CAPITAL_KEY: Symbol = symbol_short!("CAPITAL");
+const CONSENSUS_CACHE_KEY: Symbol = symbol_short!("CACHE");
+const RELAYER_TTL_THRESHOLD: u32 = 5_000;
 
 #[contracttype]
 #[derive(Clone)]
@@ -74,6 +90,46 @@ pub struct StakeRecord {
     pub node: Address,
     pub amount: u64,
     pub registered_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct NodeProfile {
+    pub node: Address,
+    pub rate: u64,
+    pub confidence: u32,
+    pub updated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct CorridorFeePool {
+    pub asset: Symbol,
+    pub collected: u64,
+    pub variable_pool: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub enum CorridorFeeKey {
+    Asset(Symbol),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeedStakeRecord {
+    pub node: Address,
+    pub asset: Symbol,
+    pub amount: u64,
+    pub tier: StakingTier,
+    pub registered_at: u64,
+}
+
+#[contracttype]
+pub enum StakingStorageKey {
+    TierConfig,
+    AssetMetrics(Symbol),
+    FeedStake(Address, Symbol),
 }
 
 #[contract]
@@ -168,12 +224,12 @@ impl TimeLockedUpgradeContract {
         env.storage().instance().get(&DATA_KEY).ok_or(ContractError::NotInitialized)
     }
 
-    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>, proposer: Address, nonce: u64, salt: Bytes, signature: BytesN<32>, sig_expires_at: u64) -> Result<(), ContractError> {
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>, proposer: Address, nonce: u64, salt: Bytes, salt_signature: BytesN<32>, sig_expires_at: u64) -> Result<(), ContractError> {
         if env.ledger().timestamp() > sig_expires_at { return Err(ContractError::SignatureExpired); }
         let data = Self::get_data(env.clone())?;
         if data.admin != proposer { return Err(ContractError::NotAdmin); }
         proposer.require_auth();
-        consume_nonce(&env, &proposer, nonce, salt, signature)?;
+        consume_nonce(&env, &proposer, nonce, salt, salt_signature);
         let pending = PendingUpgrade { new_wasm_hash, proposed_at: env.ledger().timestamp(), proposer };
         env.storage().instance().set(&PENDING_UPGRADE_KEY, &pending);
         Ok(())
@@ -271,6 +327,223 @@ impl TimeLockedUpgradeContract {
         } else { false }
     }
 
+    pub fn upsert_node_profile(env: Env, admin: Address, node: Address, rate: u64, confidence: u32) -> Result<(), ContractError> {
+        let data = Self::get_data(env.clone())?;
+        if data.admin != admin { return Err(ContractError::NotAdmin); }
+        admin.require_auth();
+        let mut profiles = Self::_get_node_profiles(&env);
+        profiles.set(node.clone(), NodeProfile { node, rate, confidence, updated_at: env.ledger().timestamp() });
+        env.storage().persistent().set(&NODE_PROFILES_KEY, &profiles);
+        Ok(())
+    }
+
+    pub fn get_latest_rate(env: Env, node: Address) -> Result<u64, ContractError> {
+        Self::_maintain_relayer_profile_ttl(&env);
+        let profiles = Self::_get_node_profiles(&env);
+        let profile = profiles.get(node).ok_or(ContractError::NotRegistered)?;
+        Ok(Self::_scan_profile_for_rate(profile).ok_or(ContractError::NotRegistered)?)
+    }
+
+    pub fn add_corridor_fees(env: Env, asset: Symbol, collected: u64, variable_fee: u64) -> Result<CorridorFeePool, ContractError> {
+        let key = CorridorFeeKey::Asset(asset.clone());
+        let mut pool: CorridorFeePool = env.storage().persistent().get(&key).unwrap_or(CorridorFeePool { asset: asset.clone(), collected: 0, variable_pool: 0 });
+        pool.collected = pool.collected.checked_add(collected).ok_or(ContractError::Overflow)?;
+        pool.variable_pool = pool.variable_pool.checked_add(variable_fee).ok_or(ContractError::Overflow)?;
+        env.storage().persistent().set(&key, &pool);
+        Ok(pool)
+    }
+
+    // ── Dynamic Staking Tier Assignment (Issue #300) ─────────────────────────
+
+    /// Configure the minimum stake required for each collateral tier.
+    pub fn set_staking_tier_config(
+        env: Env,
+        admin: Address,
+        config: StakingTierConfig,
+    ) -> Result<(), ContractError> {
+        let data = Self::get_data(env.clone())?;
+        if data.admin != admin {
+            return Err(ContractError::NotAdmin);
+        }
+        admin.require_auth();
+        validate_tier_config(&config)?;
+        env.storage()
+            .instance()
+            .set(&StakingStorageKey::TierConfig, &config);
+        Ok(())
+    }
+
+    /// Return the active staking tier configuration.
+    pub fn get_staking_tier_config(env: Env) -> StakingTierConfig {
+        env.storage()
+            .instance()
+            .get(&StakingStorageKey::TierConfig)
+            .unwrap_or_default()
+    }
+
+    /// Set the volume and volatility profile for a currency feed.
+    ///
+    /// The effective volume score is the greater of the admin floor and the
+    /// on-chain corridor activity derived score.
+    pub fn set_asset_feed_metrics(
+        env: Env,
+        admin: Address,
+        asset: Symbol,
+        volume_score_floor: u32,
+        volatility_bps: u32,
+    ) -> Result<AssetFeedMetrics, ContractError> {
+        let data = Self::get_data(env.clone())?;
+        if data.admin != admin {
+            return Err(ContractError::NotAdmin);
+        }
+        admin.require_auth();
+
+        let metrics = AssetFeedMetrics {
+            volume_score: volume_score_floor.min(100),
+            volatility_bps,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&StakingStorageKey::AssetMetrics(asset.clone()), &metrics);
+
+        Ok(metrics)
+    }
+
+    /// Return the resolved feed metrics for an asset, including corridor volume.
+    pub fn get_asset_feed_metrics(env: Env, asset: Symbol) -> AssetFeedMetrics {
+        Self::_resolve_feed_metrics(&env, &asset)
+    }
+
+    /// Return the staking tier assigned to a currency feed.
+    pub fn get_staking_tier(env: Env, asset: Symbol) -> StakingTier {
+        assign_tier(&Self::_resolve_feed_metrics(&env, &asset))
+    }
+
+    /// Return the minimum stake a validator must post for a currency feed.
+    pub fn get_required_stake(env: Env, asset: Symbol) -> u64 {
+        let tier = Self::get_staking_tier(env.clone(), asset);
+        let config = Self::get_staking_tier_config(env);
+        required_stake_for_tier(tier, &config)
+    }
+
+    /// Register a validator node for a specific currency feed with tier-aware collateral.
+    pub fn stake_and_register_for_feed(
+        env: Env,
+        node: Address,
+        asset: Symbol,
+        amount: u64,
+    ) -> Result<FeedStakeRecord, ContractError> {
+        if amount == 0 {
+            return Err(ContractError::InvalidStakeAmount);
+        }
+
+        node.require_auth();
+
+        let feed_key = StakingStorageKey::FeedStake(node.clone(), asset.clone());
+        if env.storage().persistent().has(&feed_key) {
+            return Err(ContractError::FeedAlreadyRegistered);
+        }
+
+        let tier = Self::get_staking_tier(env.clone(), asset.clone());
+        let required = Self::get_required_stake(env.clone(), asset.clone());
+        if amount < required {
+            return Err(ContractError::InsufficientStakeForTier);
+        }
+
+        env.storage().persistent().set(&feed_key, &amount);
+
+        let mut stakes: Map<Address, u64> = env
+            .storage()
+            .instance()
+            .get(&STAKE_REGISTRY_KEY)
+            .unwrap_or_else(|| Map::new(&env));
+        let node_total = stakes.get(node.clone()).unwrap_or(0);
+        let new_node_total = node_total
+            .checked_add(amount)
+            .ok_or(ContractError::Overflow)?;
+        stakes.set(node.clone(), new_node_total);
+
+        let total: u64 = env
+            .storage()
+            .instance()
+            .get(&TOTAL_STAKED_KEY)
+            .unwrap_or(0u64);
+        let new_total = total.checked_add(amount).ok_or(ContractError::Overflow)?;
+
+        env.storage().instance().set(&STAKE_REGISTRY_KEY, &stakes);
+        env.storage().instance().set(&TOTAL_STAKED_KEY, &new_total);
+        Self::_record_heartbeat(&env, asset.clone());
+
+        Ok(FeedStakeRecord {
+            node,
+            asset,
+            amount,
+            tier,
+            registered_at: env.ledger().timestamp(),
+        })
+    }
+
+    /// Withdraw collateral from a currency feed and deregister the node for that feed.
+    pub fn unstake_from_feed(env: Env, node: Address, asset: Symbol) -> Result<u64, ContractError> {
+        node.require_auth();
+
+        let feed_key = StakingStorageKey::FeedStake(node.clone(), asset.clone());
+        let amount: u64 = env
+            .storage()
+            .persistent()
+            .get(&feed_key)
+            .ok_or(ContractError::NotRegistered)?;
+
+        env.storage().persistent().remove(&feed_key);
+
+        let mut stakes: Map<Address, u64> = env
+            .storage()
+            .instance()
+            .get(&STAKE_REGISTRY_KEY)
+            .unwrap_or_else(|| Map::new(&env));
+        let node_total = stakes.get(node.clone()).unwrap_or(0);
+        let new_node_total = node_total.saturating_sub(amount);
+        if new_node_total == 0 {
+            stakes.remove(node.clone());
+        } else {
+            stakes.set(node.clone(), new_node_total);
+        }
+
+        let total: u64 = env
+            .storage()
+            .instance()
+            .get(&TOTAL_STAKED_KEY)
+            .unwrap_or(0u64);
+        let new_total = total.saturating_sub(amount);
+
+        env.storage().instance().set(&STAKE_REGISTRY_KEY, &stakes);
+        env.storage().instance().set(&TOTAL_STAKED_KEY, &new_total);
+
+        Ok(amount)
+    }
+
+    /// Return the collateral posted by a node for a specific currency feed.
+    pub fn get_feed_stake(env: Env, node: Address, asset: Symbol) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&StakingStorageKey::FeedStake(node, asset))
+            .unwrap_or(0)
+    }
+
+    pub fn get_corridor_fee_pool(env: Env, asset: Symbol) -> CorridorFeePool {
+        env.storage().persistent().get(&CorridorFeeKey::Asset(asset.clone())).unwrap_or(CorridorFeePool { asset, collected: 0, variable_pool: 0 })
+    }
+
+    pub fn set_platform_capital(env: Env, capital: u64) {
+        env.storage().instance().set(&PLATFORM_CAPITAL_KEY, &capital);
+    }
+
+    pub fn finalize_consensus(env: Env) {
+        env.storage().temporary().remove(&CONSENSUS_CACHE_KEY);
+        env.storage().temporary().remove(&HEARTBEAT_KEY);
+    }
+
     pub fn register_signer(env: Env, signer: Address, caller: Address) -> Result<(), ContractError> {
         let data = Self::get_data(env.clone())?;
         if data.admin != caller { return Err(ContractError::NotAdmin); }
@@ -306,6 +579,22 @@ impl TimeLockedUpgradeContract {
         env.storage().instance().get(&SIGNERS_KEY).unwrap_or_else(|| Map::new(env))
     }
 
+    fn _get_node_profiles(env: &Env) -> Map<Address, NodeProfile> {
+        env.storage().persistent().get(&NODE_PROFILES_KEY).unwrap_or_else(|| Map::new(env))
+    }
+
+    fn _scan_profile_for_rate(profile: NodeProfile) -> Option<u64> {
+        if profile.confidence == 0 { None } else { Some(profile.rate) }
+    }
+
+    fn _maintain_relayer_profile_ttl(env: &Env) {
+        env.storage().persistent().extend_ttl(
+            &NODE_PROFILES_KEY,
+            RELAYER_TTL_THRESHOLD,
+            env.storage().max_ttl(),
+        );
+    }
+
     fn _is_signer(env: &Env, addr: &Address) -> bool {
         Self::_get_signers(env).contains_key(addr.clone())
     }
@@ -315,11 +604,20 @@ impl TimeLockedUpgradeContract {
         n / 2 + 1
     }
 
-    fn assert_contract_is_active(env: &Env) -> Result<(), ContractError> {
-        if env.storage().instance().has(&DATA_KEY) {
-            Ok(())
-        } else {
-            Err(ContractError::NotInitialized)
+    fn _resolve_feed_metrics(env: &Env, asset: &Symbol) -> AssetFeedMetrics {
+        let pool = Self::get_corridor_fee_pool(env.clone(), asset.clone());
+        let stored: AssetFeedMetrics = env
+            .storage()
+            .persistent()
+            .get(&StakingStorageKey::AssetMetrics(asset.clone()))
+            .unwrap_or(AssetFeedMetrics {
+                volume_score: 0,
+                volatility_bps: 0,
+            });
+
+        AssetFeedMetrics {
+            volume_score: effective_volume_score(stored.volume_score, pool.collected),
+            volatility_bps: stored.volatility_bps,
         }
     }
 }
