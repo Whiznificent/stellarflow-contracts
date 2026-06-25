@@ -571,8 +571,9 @@ fn test_regional_feed_allows_lower_stake_than_premier_feed() {
     let regional = symbol_short!("KES");
     let premier = symbol_short!("NGN");
 
-    client.set_asset_feed_metrics(&admin, &regional, &10, &100);
-    client.set_asset_feed_metrics(&admin, &premier, &80, &1_000);
+    let signers = soroban_sdk::vec![&env, admin.clone(), admin.clone()];
+    client.set_asset_feed_metrics(&admin, &regional, &10, &100, &signers);
+    client.set_asset_feed_metrics(&admin, &premier, &80, &1_000, &signers);
 
     assert_eq!(client.get_staking_tier(&regional), StakingTier::Regional);
     assert_eq!(client.get_staking_tier(&premier), StakingTier::Premier);
@@ -604,7 +605,8 @@ fn test_corridor_volume_bumps_tier_requirements() {
     client.initialize(&admin);
 
     let asset = symbol_short!("GHS");
-    client.set_asset_feed_metrics(&admin, &asset, &10, &200);
+    let signers = soroban_sdk::vec![&env, admin.clone(), admin.clone()];
+    client.set_asset_feed_metrics(&admin, &asset, &10, &200, &signers);
 
     assert_eq!(client.get_staking_tier(&asset), StakingTier::Regional);
 
@@ -625,6 +627,7 @@ fn test_custom_tier_config_is_enforced() {
     let node = soroban_sdk::Address::generate(&env);
     client.initialize(&admin);
 
+    let signers = soroban_sdk::vec![&env, admin.clone(), admin.clone()];
     client.set_staking_tier_config(
         &admin,
         &StakingTierConfig {
@@ -632,10 +635,11 @@ fn test_custom_tier_config_is_enforced() {
             standard_min_stake: 2_500,
             premier_min_stake: 25_000,
         },
+        &signers,
     );
 
     let asset = symbol_short!("ZAR");
-    client.set_asset_feed_metrics(&admin, &asset, &10, &100);
+    client.set_asset_feed_metrics(&admin, &asset, &10, &100, &signers);
 
     assert_eq!(client.get_required_stake(&asset), 250u64);
 
@@ -658,7 +662,8 @@ fn test_unstake_from_feed_updates_totals() {
     client.initialize(&admin);
 
     let asset = symbol_short!("UGX");
-    client.set_asset_feed_metrics(&admin, &asset, &10, &100);
+    let signers = soroban_sdk::vec![&env, admin.clone(), admin.clone()];
+    client.set_asset_feed_metrics(&admin, &asset, &10, &100, &signers);
     client.stake_and_register_for_feed(&node, &asset, &100u64);
 
     assert_eq!(client.get_total_staked(), 100u64);
