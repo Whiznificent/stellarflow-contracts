@@ -4152,6 +4152,12 @@ impl PriceOracle {
     pub fn min_unbonding_delay_ledgers() -> u32 {
         slashing::MIN_UNBONDING_DELAY_LEDGERS
     }
+
+    /// Claim accumulated rewards for a relayer. This is a thin wrapper that
+    /// delegates to the rewards module which enforces Checks-Effects-Interactions.
+    pub fn claim_rewards(env: Env, relayer: Address, token_contract: Address) -> i128 {
+        crate::rewards::Rewards::claim_rewards(env, relayer, token_contract)
+    }
 }
 
 mod asset_symbol;
