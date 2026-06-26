@@ -33,7 +33,7 @@
               "function_name": "update_heartbeat",
               "args": [
                 {
-                  "symbol": "NGN"
+                  "u32": 3897123275
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -83,7 +83,7 @@
                   "map": [
                     {
                       "key": {
-                        "symbol": "NGN"
+                        "u32": 3897123275
                       },
                       "val": {
                         "u64": 0
@@ -95,7 +95,7 @@
             },
             "ext": "v0"
           },
-          15
+          17280
         ]
       ],
       [
@@ -133,6 +133,14 @@
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "max_fee_ceiling"
+                              },
+                              "val": {
+                                "u64": 1000000000
                               }
                             },
                             {
@@ -314,7 +322,7 @@
             "data": {
               "vec": [
                 {
-                  "symbol": "NGN"
+                  "u32": 3897123275
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -366,7 +374,7 @@
               }
             ],
             "data": {
-              "symbol": "NGN"
+              "u32": 3897123275
             }
           }
         }
@@ -415,7 +423,7 @@
               }
             ],
             "data": {
-              "symbol": "NGN"
+              "u32": 3897123275
             }
           }
         }

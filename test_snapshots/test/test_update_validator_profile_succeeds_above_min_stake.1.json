@@ -66,8 +66,7 @@
           "sub_invocations": []
         }
       ]
-    ],
-    []
+    ]
   ],
   "ledger": {
     "protocol_version": 20,
@@ -104,7 +103,7 @@
                   "map": [
                     {
                       "key": {
-                        "symbol": "STAKE"
+                        "u32": 0
                       },
                       "val": {
                         "u64": 0
@@ -112,7 +111,7 @@
                     },
                     {
                       "key": {
-                        "symbol": "XLM"
+                        "u32": 3061538408
                       },
                       "val": {
                         "u64": 0
@@ -124,7 +123,7 @@
             },
             "ext": "v0"
           },
-          15
+          17280
         ]
       ],
       [
@@ -162,6 +161,14 @@
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "max_fee_ceiling"
+                              },
+                              "val": {
+                                "u64": 1000000000
                               }
                             },
                             {
@@ -510,55 +517,6 @@
               }
             ],
             "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "is_data_fresh"
-              }
-            ],
-            "data": {
-              "symbol": "XLM"
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "is_data_fresh"
-              }
-            ],
-            "data": {
-              "bool": true
-            }
           }
         }
       },

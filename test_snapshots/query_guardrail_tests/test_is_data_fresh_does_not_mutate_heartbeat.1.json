@@ -33,7 +33,7 @@
               "function_name": "update_heartbeat",
               "args": [
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -87,7 +87,7 @@
                   "map": [
                     {
                       "key": {
-                        "symbol": "GHS"
+                        "u32": 4026531840
                       },
                       "val": {
                         "u64": 0
@@ -99,7 +99,7 @@
             },
             "ext": "v0"
           },
-          15
+          17280
         ]
       ],
       [
@@ -137,6 +137,14 @@
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "max_fee_ceiling"
+                              },
+                              "val": {
+                                "u64": 1000000000
                               }
                             },
                             {
@@ -318,7 +326,7 @@
             "data": {
               "vec": [
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -370,7 +378,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }
@@ -419,7 +427,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }
@@ -468,7 +476,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }
@@ -517,7 +525,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }
@@ -566,7 +574,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }
@@ -615,7 +623,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }

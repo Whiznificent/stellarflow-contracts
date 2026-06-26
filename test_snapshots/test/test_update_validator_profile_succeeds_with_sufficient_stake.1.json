@@ -103,7 +103,7 @@
                   "map": [
                     {
                       "key": {
-                        "symbol": "STAKE"
+                        "u32": 0
                       },
                       "val": {
                         "u64": 0
@@ -111,7 +111,7 @@
                     },
                     {
                       "key": {
-                        "symbol": "USDC"
+                        "u32": 2673845569
                       },
                       "val": {
                         "u64": 0
@@ -123,7 +123,7 @@
             },
             "ext": "v0"
           },
-          15
+          17280
         ]
       ],
       [
@@ -161,6 +161,14 @@
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "max_fee_ceiling"
+                              },
+                              "val": {
+                                "u64": 1000000000
                               }
                             },
                             {

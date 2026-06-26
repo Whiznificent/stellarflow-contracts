@@ -24,7 +24,6 @@
       ]
     ],
     [],
-    [],
     []
   ],
   "ledger": {
@@ -222,12 +221,10 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "is_data_fresh"
+                "symbol": "finalize_consensus"
               }
             ],
-            "data": {
-              "u32": 3897123275
-            }
+            "data": "void"
           }
         }
       },
@@ -245,12 +242,10 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "is_data_fresh"
+                "symbol": "finalize_consensus"
               }
             ],
-            "data": {
-              "bool": false
-            }
+            "data": "void"
           }
         }
       },
@@ -271,12 +266,10 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "is_data_fresh"
+                "symbol": "get_revocation_ballot"
               }
             ],
-            "data": {
-              "u32": 3897123275
-            }
+            "data": "void"
           }
         }
       },
@@ -294,61 +287,10 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "is_data_fresh"
+                "symbol": "get_revocation_ballot"
               }
             ],
-            "data": {
-              "bool": false
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "is_data_fresh"
-              }
-            ],
-            "data": {
-              "u32": 3897123275
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "is_data_fresh"
-              }
-            ],
-            "data": {
-              "bool": false
-            }
+            "data": "void"
           }
         }
       },
