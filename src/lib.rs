@@ -109,6 +109,8 @@ pub enum ContractError {
     DivisionByZero = 26,
     /// The proposed fee exceeds the maximum allowed ceiling.
     FeeCeilingExceeded = 27,
+    /// Incoming tracking sequence is less than or equal to the active stored checkpoint value.
+    StaleSequence = 26,
 }
 
 // Contract state keys
