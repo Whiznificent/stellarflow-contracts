@@ -1,7 +1,26 @@
-use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
-use crate::{ContractData, ContractError, DATA_KEY};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol};
+use crate::{ContractData, ContractError, DATA_KEY, SIGNERS_KEY, REVOKED_SIGNER_KEY};
+
 
 pub(crate) const PENDING_OWNER_KEY: Symbol = symbol_short!("PNDOWN");
+
+// ── Emergency key revocation ─────────────────────────────────────────────
+
+pub(crate) const EMERGENCY_REVOCATION_KEY: Symbol = symbol_short!("EMERREV");
+
+#[contracttype]
+#[derive(Clone)]
+pub struct EmergencyRevocationProposal {
+    /// Address that must be blocked.
+    pub target: Address,
+    /// Address that will be used as “admin replacement” in this emergency flow.
+    /// (Used only to keep existing contract behavior; revocation blocking is the main effect.)
+    pub replacement: Address,
+    pub proposer: Address,
+    pub proposed_at: u64,
+    pub votes: Map<Address, ()>,
+}
+
 
 #[contracttype]
 #[derive(Clone)]
@@ -46,7 +65,10 @@ pub fn propose_ownership_transfer(
 /// Only succeeds when a pending transfer exists and caller is the nominee.
 pub fn claim_ownership(env: &Env, claimer: Address) -> Result<(), ContractError> {
     let pending: PendingOwner = env
+
         .storage()
+
+
         .instance()
         .get(&PENDING_OWNER_KEY)
         .ok_or(ContractError::NoPendingOwner)?;

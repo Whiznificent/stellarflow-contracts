@@ -1,3 +1,4 @@
+
 #![no_std]
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Map, Symbol};
 
@@ -41,6 +42,12 @@ pub enum ContractError {
     InvalidTierConfig = 21,
     /// Node is already registered for this currency feed.
     FeedAlreadyRegistered = 22,
+    /// Address was revoked (blocked) and may no longer sign or modify configuration.
+    RevokedAddress = 23,
+    /// Emergency revocation is already pending for the given target.
+    EmergencyRevocationAlreadyActive = 24,
+    /// No emergency revocation is currently active.
+    NoActiveEmergencyRevocation = 25,
 }
 
 // Contract state keys
@@ -54,6 +61,9 @@ const HB_INTERVAL_KEY: Symbol = symbol_short!("HBINTV");
 const DEFAULT_HEARTBEAT_INTERVAL: u64 = 5 * 60;
 const SIGNERS_KEY: Symbol = symbol_short!("SIGNERS");
 const REVOCATION_KEY: Symbol = symbol_short!("REVOKE");
+// Emergency key revocation / blocking
+const REVOKED_SIGNER_KEY: Symbol = symbol_short!("REVOKED");
+const EMERGENCY_REVOCATION_KEY: Symbol = symbol_short!("EMERREV");
 const NODE_PROFILES_KEY: Symbol = symbol_short!("NODES");
 const PLATFORM_CAPITAL_KEY: Symbol = symbol_short!("CAPITAL");
 const CONSENSUS_CACHE_KEY: Symbol = symbol_short!("CACHE");
@@ -420,6 +430,24 @@ impl TimeLockedUpgradeContract {
         assign_tier(&Self::_resolve_feed_metrics(&env, &asset))
     }
 
+    fn _resolve_feed_metrics(env: &Env, asset: &Symbol) -> AssetFeedMetrics {
+        let pool = Self::get_corridor_fee_pool(env.clone(), asset.clone());
+        let stored: AssetFeedMetrics = env
+            .storage()
+            .persistent()
+            .get(&StakingStorageKey::AssetMetrics(asset.clone()))
+            .unwrap_or(AssetFeedMetrics {
+                volume_score: 0,
+                volatility_bps: 0,
+            });
+
+        AssetFeedMetrics {
+            volume_score: effective_volume_score(stored.volume_score, pool.collected),
+            volatility_bps: stored.volatility_bps,
+        }
+    }
+
+
     /// Return the minimum stake a validator must post for a currency feed.
     pub fn get_required_stake(env: Env, asset: Symbol) -> u64 {
         let tier = Self::get_staking_tier(env.clone(), asset);
@@ -744,23 +772,8 @@ mod query_guardrail_tests {
     }
 }
 
-    fn _resolve_feed_metrics(env: &Env, asset: &Symbol) -> AssetFeedMetrics {
-        let pool = Self::get_corridor_fee_pool(env.clone(), asset.clone());
-        let stored: AssetFeedMetrics = env
-            .storage()
-            .persistent()
-            .get(&StakingStorageKey::AssetMetrics(asset.clone()))
-            .unwrap_or(AssetFeedMetrics {
-                volume_score: 0,
-                volatility_bps: 0,
-            });
-
-        AssetFeedMetrics {
-            volume_score: effective_volume_score(stored.volume_score, pool.collected),
-            volatility_bps: stored.volatility_bps,
-        }
-    }
-}
+// NOTE: _resolve_feed_metrics is defined inside the main contract impl.
 
 #[cfg(test)]
 mod test;
+
