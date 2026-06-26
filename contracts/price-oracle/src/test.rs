@@ -1294,6 +1294,87 @@ fn test_dummy_consumer_multiple_price_fetches() {
 }
 
 // ============================================================================
+// Rewards: accumulation + claim tests
+// ============================================================================
+
+#[contract]
+pub struct DummyToken;
+
+#[contractimpl]
+impl DummyToken {
+    /// Minimal transfer implementation that records received amounts per address.
+    pub fn transfer(env: Env, _from: Address, to: Address, amount: i128) {
+        let key = Symbol::new(&env, "TRANSFERS");
+        let mut transfers: soroban_sdk::Map<Address, i128> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+
+        let prev = transfers.get(to.clone()).unwrap_or(0_i128);
+        transfers.set(to.clone(), prev.saturating_add(amount));
+        env.storage().instance().set(&key, &transfers);
+    }
+}
+
+#[test]
+fn test_rewards_accumulate_and_claim() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Deploy the oracle contract
+    let oracle_id = env.register(PriceOracle, ());
+    let oracle_client = PriceOracleClient::new(&env, &oracle_id);
+
+    // Create a relayer address
+    let relayer = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
+
+    // Simulate multiple consensus cycles crediting fractional rewards (units)
+    env.as_contract(&oracle_id, || {
+        crate::rewards::Rewards::add_to_balance(&env, &relayer, 5_i128);
+        crate::rewards::Rewards::add_to_balance(&env, &relayer, 3_i128);
+        crate::rewards::Rewards::add_to_balance(&env, &relayer, 2_i128);
+    });
+
+    // Verify the stored balance is the sum (10)
+    env.as_contract(&oracle_id, || {
+        let storage = env.storage().persistent();
+        let map: soroban_sdk::Map<Address, i128> = storage
+            .get(&DataKey::Rewards)
+            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+        let bal = map.get(relayer.clone()).unwrap_or(0_i128);
+        assert_eq!(bal, 10_i128);
+    });
+
+    // Deploy dummy token and use its address as the token contract
+    let token_id = env.register(DummyToken, ());
+
+    // Relayer claims rewards via the public endpoint
+    let claimed = oracle_client.claim_rewards(&relayer, &token_id);
+    assert_eq!(claimed, 10_i128, "Claimed amount must equal accumulated sum");
+
+    // Verify the on-chain balance was zeroed BEFORE transfer (i.e., now zero)
+    env.as_contract(&oracle_id, || {
+        let storage = env.storage().persistent();
+        let map: soroban_sdk::Map<Address, i128> = storage
+            .get(&DataKey::Rewards)
+            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+        let bal = map.get(relayer.clone()).unwrap_or(0_i128);
+        assert_eq!(bal, 0_i128, "Balance must be zero after claim");
+    });
+
+    // Verify DummyToken recorded the transfer amount exactly
+    let key = Symbol::new(&env, "TRANSFERS");
+    let transfers: soroban_sdk::Map<Address, i128> = env
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+    let received = transfers.get(relayer.clone()).unwrap_or(0_i128);
+    assert_eq!(received, 10_i128, "Token contract should have received exact amount");
+}
+
+// ============================================================================
 // Upgrade tests
 // ============================================================================
 

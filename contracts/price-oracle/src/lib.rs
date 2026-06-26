@@ -488,6 +488,10 @@ pub enum ContractError {
     UnbondingAlreadyReleased = 8,
     /// The current ledger plus the unbonding delay overflowed.
     LedgerSequenceOverflow = 9,
+    /// Slippage tolerance exceeded - computed rate deviates too far from expected rate.
+    SlippageToleranceExceeded = 10,
+    /// Invalid slippage tolerance - must be between 0 and 10000 basis points (0-100%).
+    InvalidSlippageTolerance = 11,
 }
 
 pub type Error = ContractError;
@@ -4148,6 +4152,12 @@ impl PriceOracle {
     pub fn min_unbonding_delay_ledgers() -> u32 {
         slashing::MIN_UNBONDING_DELAY_LEDGERS
     }
+
+    /// Claim accumulated rewards for a relayer. This is a thin wrapper that
+    /// delegates to the rewards module which enforces Checks-Effects-Interactions.
+    pub fn claim_rewards(env: Env, relayer: Address, token_contract: Address) -> i128 {
+        crate::rewards::Rewards::claim_rewards(env, relayer, token_contract)
+    }
 }
 
 mod asset_symbol;
@@ -4157,6 +4167,7 @@ mod callbacks;
 mod delegate_tests;
 pub mod math;
 mod median;
+mod slashing;
 pub mod slashing;
 mod test;
 mod types;

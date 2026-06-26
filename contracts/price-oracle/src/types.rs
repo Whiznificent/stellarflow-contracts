@@ -25,6 +25,8 @@ pub enum DataKey {
     PendingAdminTimestamp,
     AdminUpdateTimestamp,
     RecentEvents,
+    /// Mapping of relayer address -> accumulated reward balance
+    Rewards,
     Initialized,
     /// TWAP Buffer: Stores last 10 (Timestamp, Price) updates.
     Twap(Symbol),
