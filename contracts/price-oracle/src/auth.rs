@@ -933,16 +933,8 @@ mod auth_tests {
             _set_vote_delegate(&env, &admin, &delegate1);
             assert_eq!(_get_vote_delegate(&env, &admin), Some(delegate1));
 
-        let events = env.events().all();
-        assert!(!events.events().is_empty());
-    }
-
-    #[test]
-    fn test_set_admin_emits_event_on_admin_change() {
-        let (env, contract_id, _old_admin) = setup();
-        let new_admin = Address::generate(&env);
-
-            assert_eq!(_add_effective_action_votes(&env, 1, &admin2), 2);
+            _set_vote_delegate(&env, &admin, &delegate2);
+            assert_eq!(_get_vote_delegate(&env, &admin), Some(delegate2));
         });
     }
 
@@ -959,9 +951,5 @@ mod auth_tests {
 
             assert!(!_has_admin(&env));
         });
-    }
-
-        let events = env.events().all();
-        assert!(events.events().len() >= 2);
     }
 }

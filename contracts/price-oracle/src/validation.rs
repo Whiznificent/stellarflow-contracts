@@ -96,6 +96,25 @@ pub fn get_last_validation_timestamp(env: &Env, asset: &Symbol) -> Option<u64> {
         .get(&DataKey::LastLiquidityValidation(asset.clone()))
 }
 
+/// Ensure the current consensus buffer contains at least three independent
+/// provider sources before a price can be finalized.
+///
+/// This prevents accepting a finalized consensus price when the active input
+/// pool has collapsed below the minimum safe participation threshold.
+pub fn validate_consensus_quorum(env: &Env, buffer: &crate::types::PriceBuffer) -> Result<(), ContractError> {
+    let mut unique_sources = soroban_sdk::Map::new(env);
+
+    for entry in buffer.entries.iter() {
+        unique_sources.set(entry.provider.clone(), ());
+    }
+
+    if unique_sources.len() < 3 {
+        return Err(ContractError::IncompleteQuorum);
+    }
+
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Validation Logic
 // ─────────────────────────────────────────────────────────────────────────────

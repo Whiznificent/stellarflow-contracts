@@ -492,6 +492,8 @@ pub enum ContractError {
     SlippageToleranceExceeded = 10,
     /// Invalid slippage tolerance - must be between 0 and 10000 basis points (0-100%).
     InvalidSlippageTolerance = 11,
+    /// Fewer than three independent node sources contributed to the current consensus pool.
+    IncompleteQuorum = 12,
 }
 
 pub type Error = ContractError;
@@ -679,18 +681,9 @@ fn acquire_lock(env: &Env) -> Result<(), ContractError> {
         return Err(ContractError::ReentrancyDetected);
     }
 
-    /// Return true when a price timestamp is older than 24 hours.
-    pub fn is_timestamp_stale(env: Env, timestamp: u64) -> bool {
-        let current_timestamp = env.ledger().timestamp();
-        current_timestamp > timestamp && current_timestamp - timestamp > 86_400
-    }
-
-    /// Set the price data for a specific asset.
-    pub fn set_price(env: Env, asset: Symbol, val: i128) -> Result<(), Error> {
-        let storage = env.storage().persistent();
-        let mut prices: soroban_sdk::Map<Symbol, PriceData> = storage
-            .get(&PRICE_DATA_KEY)
-            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+    env.storage().temporary().set(&DataKey::IsLocked, &true);
+    Ok(())
+}
 
 /// Release the reentrancy lock for set_price.
 fn release_lock(env: &Env) {
@@ -2152,6 +2145,11 @@ impl PriceOracle {
             timestamp: env.ledger().timestamp(),
         };
         buffer.entries.push_back(entry);
+
+        if !bypass_active {
+            validation::validate_consensus_quorum(&env, &buffer)?;
+        }
+
         // Buffer decimals are always 9 after normalization.
         buffer.decimals = 9;
         buffer.ttl = ttl;

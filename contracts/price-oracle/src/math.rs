@@ -209,33 +209,29 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
         .checked_mul(INTERIOR_SCALE)
         .ok_or(Error::PriceMathOverflow)?;
 
-    if native_decimals < TARGET {
+    let normalized_in_interior_space = if native_decimals < TARGET {
         let diff = TARGET - native_decimals;
-        
+
         // Trap power overflow early
         let multiplier = 10_i128
             .checked_pow(diff)
             .ok_or(Error::PriceMathOverflow)?;
-        
+
         // Use checked_mul to explicitly trap multiplication overflow
-        scaled
-        let multiplier = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
         scaled
             .checked_mul(multiplier)
             .ok_or(Error::PriceMathOverflow)?
     } else if native_decimals > TARGET {
         let diff = native_decimals - TARGET;
-        
+
         // Trap power overflow early
         let divisor = 10_i128
             .checked_pow(diff)
             .ok_or(Error::PriceMathOverflow)?;
-        
+
         // Explicit divide-by-zero trap (defensive, 10^n cannot be zero)
-        if divisor == 0 {
-            return Err(Error::PriceMathOverflow);
-        }
-        
+        require_nonzero_denominator(divisor)?;
+
         // Use checked_div to trap any division anomalies
         scaled
             .checked_div(divisor)
@@ -245,18 +241,6 @@ pub fn normalize_to_nine(value: i128, native_decimals: u32) -> Result<i128, Erro
     };
 
     // Final checked division to scale back down
-    normalized_in_interior_space
-        .checked_div(INTERIOR_SCALE)
-        .ok_or(Error::PriceMathOverflow)
-        let divisor = 10_i128.checked_pow(diff).ok_or(Error::PriceMathOverflow)?;
-        require_nonzero_denominator(divisor)?;
-        scaled
-            .checked_div(divisor)
-            .ok_or(Error::PriceMathOverflow)?
-    } else {
-        scaled
-    };
-
     require_nonzero_denominator(INTERIOR_SCALE)?;
     normalized_in_interior_space
         .checked_div(INTERIOR_SCALE)
