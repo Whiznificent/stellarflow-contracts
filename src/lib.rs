@@ -35,12 +35,7 @@ pub enum ContractError {
     ThresholdNotReached = 17,
     SignatureExpired = 18,
     InvalidSaltSignature = 19,
-    /// Stake amount is below the tier minimum for the target currency feed.
-    InsufficientStakeForTier = 20,
-    /// Staking tier configuration is invalid or non-monotonic.
-    InvalidTierConfig = 21,
-    /// Node is already registered for this currency feed.
-    FeedAlreadyRegistered = 22,
+    FeeCeilingExceeded = 20,
 }
 
 // Contract state keys
@@ -56,6 +51,7 @@ const SIGNERS_KEY: Symbol = symbol_short!("SIGNERS");
 const REVOCATION_KEY: Symbol = symbol_short!("REVOKE");
 const NODE_PROFILES_KEY: Symbol = symbol_short!("NODES");
 const PLATFORM_CAPITAL_KEY: Symbol = symbol_short!("CAPITAL");
+const MAX_FEE_CEILING: u64 = 1_000_000_000;
 const CONSENSUS_CACHE_KEY: Symbol = symbol_short!("CACHE");
 const RELAYER_TTL_THRESHOLD: u32 = 5_000;
 
@@ -82,6 +78,7 @@ pub struct PendingUpgrade {
 pub struct ContractData {
     pub admin: Address,
     pub value: u64,
+    pub max_fee_ceiling: u64,
 }
 
 #[contracttype]
@@ -142,7 +139,7 @@ impl TimeLockedUpgradeContract {
             return Err(ContractError::AlreadyInitialized);
         }
         admin.require_auth();
-        let data = ContractData { admin: admin.clone(), value: 0 };
+        let data = ContractData { admin: admin.clone(), value: 0, max_fee_ceiling: MAX_FEE_CEILING };
         env.storage().instance().set(&DATA_KEY, &data);
         Ok(())
     }
@@ -273,6 +270,7 @@ impl TimeLockedUpgradeContract {
         if env.ledger().timestamp() > sig_expires_at { return Err(ContractError::SignatureExpired); }
         let mut data = Self::get_data(env.clone())?;
         if data.admin != caller { return Err(ContractError::NotAdmin); }
+        if new_value > data.max_fee_ceiling { return Err(ContractError::FeeCeilingExceeded); }
         caller.require_auth();
         consume_nonce(&env, &caller, nonce, salt, signature)?;
         data.value = new_value;
@@ -327,71 +325,8 @@ impl TimeLockedUpgradeContract {
         } else { false }
     }
 
-    pub fn upsert_node_profile(env: Env, admin: Address, node: Address, rate: u64, confidence: u32) -> Result<(), ContractError> {
-        let data = Self::get_data(env.clone())?;
-        if data.admin != admin { return Err(ContractError::NotAdmin); }
-        admin.require_auth();
-        let mut profiles = Self::_get_node_profiles(&env);
-        profiles.set(node.clone(), NodeProfile { node, rate, confidence, updated_at: env.ledger().timestamp() });
-        env.storage().persistent().set(&NODE_PROFILES_KEY, &profiles);
-        Ok(())
-    }
-
-    pub fn get_latest_rate(env: Env, node: Address) -> Result<u64, ContractError> {
-        Self::_maintain_relayer_profile_ttl(&env);
-        let profiles = Self::_get_node_profiles(&env);
-        let profile = profiles.get(node).ok_or(ContractError::NotRegistered)?;
-        Ok(Self::_scan_profile_for_rate(profile).ok_or(ContractError::NotRegistered)?)
-    }
-
-    pub fn add_corridor_fees(env: Env, asset: Symbol, collected: u64, variable_fee: u64) -> Result<CorridorFeePool, ContractError> {
-        let key = CorridorFeeKey::Asset(asset.clone());
-        let mut pool: CorridorFeePool = env.storage().persistent().get(&key).unwrap_or(CorridorFeePool { asset: asset.clone(), collected: 0, variable_pool: 0 });
-        pool.collected = pool.collected.checked_add(collected).ok_or(ContractError::Overflow)?;
-        pool.variable_pool = pool.variable_pool.checked_add(variable_fee).ok_or(ContractError::Overflow)?;
-        env.storage().persistent().set(&key, &pool);
-        Ok(pool)
-    }
-
-    // ── Dynamic Staking Tier Assignment (Issue #300) ─────────────────────────
-
-    /// Configure the minimum stake required for each collateral tier.
-    pub fn set_staking_tier_config(
-        env: Env,
-        admin: Address,
-        config: StakingTierConfig,
-    ) -> Result<(), ContractError> {
-        let data = Self::get_data(env.clone())?;
-        if data.admin != admin {
-            return Err(ContractError::NotAdmin);
-        }
-        admin.require_auth();
-        validate_tier_config(&config)?;
-        env.storage()
-            .instance()
-            .set(&StakingStorageKey::TierConfig, &config);
-        Ok(())
-    }
-
-    /// Return the active staking tier configuration.
-    pub fn get_staking_tier_config(env: Env) -> StakingTierConfig {
-        env.storage()
-            .instance()
-            .get(&StakingStorageKey::TierConfig)
-            .unwrap_or_default()
-    }
-
-    /// Set the volume and volatility profile for a currency feed.
-    ///
-    /// The effective volume score is the greater of the admin floor and the
-    /// on-chain corridor activity derived score.
-    pub fn set_asset_feed_metrics(
-        env: Env,
-        admin: Address,
-        asset: Symbol,
-        volume_score_floor: u32,
-        volatility_bps: u32,
-    ) -> Result<AssetFeedMetrics, ContractError> {
+    pub fn set_heartbeat_interval(env: Env, interval: u64, admin: Address) -> Result<(), ContractError> {
+        if interval == 0 { return Err(ContractError::InvalidHeartbeatInterval); }
         let data = Self::get_data(env.clone())?;
         if data.admin != admin {
             return Err(ContractError::NotAdmin);
