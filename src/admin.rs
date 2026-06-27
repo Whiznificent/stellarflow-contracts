@@ -1,5 +1,5 @@
+use crate::{ContractData, ContractError, DATA_KEY, REVOKED_SIGNER_KEY, SIGNERS_KEY};
 use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol};
-use crate::{ContractData, ContractError, DATA_KEY, SIGNERS_KEY, REVOKED_SIGNER_KEY};
 
 pub(crate) const PENDING_OWNER_KEY: Symbol = symbol_short!("PNDOWN");
 pub(crate) const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
@@ -38,6 +38,51 @@ pub struct PendingOwner {
     pub proposed_by: Address,
 }
 
+fn get_signers(env: &Env) -> Map<Address, ()> {
+    env.storage()
+        .instance()
+        .get(&SIGNERS_KEY)
+        .unwrap_or_else(|| Map::new(env))
+}
+
+fn revocation_threshold(env: &Env) -> u32 {
+    let n = get_signers(env).len();
+    if n == 0 {
+        1
+    } else {
+        n / 2 + 1
+    }
+}
+
+fn execute_emergency_revocation(
+    env: &Env,
+    data: ContractData,
+    proposal: EmergencyRevocationProposal,
+) {
+    let mut revoked: Map<Address, ()> = env
+        .storage()
+        .instance()
+        .get(&REVOKED_SIGNER_KEY)
+        .unwrap_or_else(|| Map::new(env));
+    revoked.set(proposal.target.clone(), ());
+    env.storage().instance().set(&REVOKED_SIGNER_KEY, &revoked);
+
+    let mut signers = get_signers(env);
+    signers.remove(proposal.target.clone());
+    if proposal.replacement != proposal.target {
+        signers.set(proposal.replacement.clone(), ());
+    }
+    env.storage().instance().set(&SIGNERS_KEY, &signers);
+
+    let mut contract_data = data;
+    if contract_data.admin == proposal.target {
+        contract_data.admin = proposal.replacement.clone();
+        env.storage().instance().set(&DATA_KEY, &contract_data);
+    }
+
+    env.storage().instance().remove(&EMERGENCY_REVOCATION_KEY);
+}
+
 // ── Emergency revocation — Phase 1: open a proposal ──────────────────────
 
 /// Any registered signer **or** the current admin may open an emergency
@@ -64,7 +109,7 @@ pub fn propose_emergency_revocation(
     }
 
     // Only the admin or a registered signer may open a proposal.
-    let is_signer = _get_signers(env).contains_key(proposer.clone());
+    let is_signer = get_signers(env).contains_key(proposer.clone());
     if data.admin != proposer && !is_signer {
         return Err(ContractError::Unauthorized);
     }
@@ -76,7 +121,7 @@ pub fn propose_emergency_revocation(
     }
 
     // The target must currently be a signer or the admin.
-    let target_is_signer = _get_signers(env).contains_key(target.clone());
+    let target_is_signer = get_signers(env).contains_key(target.clone());
     if data.admin != target && !target_is_signer {
         return Err(ContractError::TargetNotAdmin);
     }
@@ -93,9 +138,13 @@ pub fn propose_emergency_revocation(
         votes,
     };
 
-    env.storage()
-        .instance()
-        .set(&EMERGENCY_REVOCATION_KEY, &proposal);
+    if proposal.votes.len() >= revocation_threshold(env) {
+        execute_emergency_revocation(env, data, proposal);
+    } else {
+        env.storage()
+            .instance()
+            .set(&EMERGENCY_REVOCATION_KEY, &proposal);
+    }
 
     Ok(())
 }
@@ -133,7 +182,7 @@ pub fn vote_emergency_revocation(
         .ok_or(ContractError::NotInitialized)?;
 
     // Only the admin or a registered signer may vote.
-    let is_signer = _get_signers(env).contains_key(voter.clone());
+    let is_signer = get_signers(env).contains_key(voter.clone());
     if data.admin != voter && !is_signer {
         return Err(ContractError::Unauthorized);
     }
@@ -156,7 +205,7 @@ pub fn vote_emergency_revocation(
 
     proposal.votes.set(voter, ());
 
-    let threshold = _revocation_threshold(env);
+    let threshold = revocation_threshold(env);
 
     if proposal.votes.len() >= threshold {
         // ── Threshold reached: execute revocation immediately ────────────
@@ -170,12 +219,10 @@ pub fn vote_emergency_revocation(
             .get(&REVOKED_SIGNER_KEY)
             .unwrap_or_else(|| Map::new(env));
         revoked.set(proposal.target.clone(), ());
-        env.storage()
-            .instance()
-            .set(&REVOKED_SIGNER_KEY, &revoked);
+        env.storage().instance().set(&REVOKED_SIGNER_KEY, &revoked);
 
         // 2. Remove the target from the active signer set.
-        let mut signers = _get_signers(env);
+        let mut signers = get_signers(env);
         signers.remove(proposal.target.clone());
 
         // 3. Promote the replacement into the signer set (unless it is the
@@ -193,9 +240,7 @@ pub fn vote_emergency_revocation(
         }
 
         // 5. Wipe the proposal so a fresh one can be raised if needed.
-        env.storage()
-            .instance()
-            .remove(&EMERGENCY_REVOCATION_KEY);
+        env.storage().instance().remove(&EMERGENCY_REVOCATION_KEY);
     } else {
         // Threshold not yet reached — persist the updated vote tally.
         env.storage()
@@ -209,9 +254,7 @@ pub fn vote_emergency_revocation(
 // ── Emergency revocation — query ─────────────────────────────────────────
 
 /// Returns the active emergency revocation proposal, if one exists.
-pub fn get_emergency_revocation_proposal(
-    env: &Env,
-) -> Option<EmergencyRevocationProposal> {
+pub fn get_emergency_revocation_proposal(env: &Env) -> Option<EmergencyRevocationProposal> {
     env.storage().instance().get(&EMERGENCY_REVOCATION_KEY)
 }
 

@@ -23,3 +23,9 @@ pub fn check_subscription(env: &Env, consumer_id: Address) -> bool {
         false
     }
 }
+
+pub fn preflight_rent_check(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(RENT_THRESHOLD, RENT_EXTEND_TO);
+}
