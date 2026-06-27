@@ -2,7 +2,7 @@ use soroban_sdk::{Address, Env, Map, Vec};
 use crate::{ContractData, ContractError, DATA_KEY, SIGNERS_KEY};
 
 /// Rigid multi-signature confirmation barrier for parameter shift actions.
-/// Requires a minimum of 2 out of 3 validated administrative signatures
+/// Requires a supermajority of 4 out of 5 validated administrative signatures
 /// before approving changes to system boundary configurations.
 pub fn require_multisig(env: &Env, signers: &Vec<Address>) -> Result<(), ContractError> {
     let authorized_signers: Map<Address, ()> = env
@@ -37,9 +37,8 @@ pub fn require_multisig(env: &Env, signers: &Vec<Address>) -> Result<(), Contrac
         }
     }
 
-    if valid_count < 2 {
-        Err(ContractError::ThresholdNotReached)
-    } else {
-        Ok(())
+    // Require a supermajority of 4 out of 5 validated administrative signatures
+    if valid_count < 4 {
+        return Err(ContractError::ThresholdNotReached);
     }
 }

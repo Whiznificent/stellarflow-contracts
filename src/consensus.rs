@@ -180,6 +180,24 @@ pub fn mock_oracle_price(env: &Env, _asset: Symbol) -> Result<i64, ContractError
     }
 }
 
+/// Validate and register the sequence of the latest asset update.
+/// Rejects incoming price updates instantly if the incoming tracking sequence 
+/// is less than or equal to the active stored checkpoint value.
+pub fn verify_and_update_sequence(env: &Env, asset: Symbol, incoming_sequence: u32) -> Result<(), ContractError> {
+    let key = symbol_short!("SEQ_TRK");
+    let mut tracker: Map<Symbol, u32> = env.storage().instance().get(&key).unwrap_or_else(|| Map::new(env));
+    
+    if let Some(active_sequence) = tracker.get(asset.clone()) {
+        if incoming_sequence <= active_sequence {
+            return Err(ContractError::StaleSequence);
+        }
+    }
+    
+    tracker.set(asset, incoming_sequence);
+    env.storage().instance().set(&key, &tracker);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
