@@ -49,6 +49,8 @@ pub(crate) mod nonce;
 use crate::nonce::{consume_nonce, get_nonce};
 
 pub mod auth;
+pub mod admin;
+pub mod storage;
 pub mod consensus;
 pub mod math;
 pub mod staking_tiers;
@@ -96,6 +98,8 @@ pub enum ContractError {
     TransferAlreadyPending = 24,
     /// No pending owner nominee exists to claim ownership.
     NoPendingOwner = 25,
+    /// Incoming tracking sequence is less than or equal to the active stored checkpoint value.
+    StaleSequence = 26,
 }
 
 // Contract state keys
@@ -115,6 +119,7 @@ const MAX_FEE_CEILING: u64 = 1_000_000_000;
 const CONSENSUS_CACHE_KEY: Symbol = symbol_short!("CACHE");
 const SEQUENCE_COUNTER_KEY: Symbol = symbol_short!("SEQ");
 const RELAYER_TTL_THRESHOLD: u32 = 5_000;
+const TREASURY_KEY: Symbol = symbol_short!("TREASURY");
 // Telemetry TTL configuration: expire after validation window closes
 const HEARTBEAT_TTL_LEDGERS: u32 = 17_280; // ~24 hours at 5s/ledger
 const HEARTBEAT_TTL_THRESHOLD: u32 = 5_000; // Extend when < 5000 ledgers remain
@@ -192,14 +197,15 @@ pub struct TimeLockedUpgradeContract;
 
 #[contractimpl]
 impl TimeLockedUpgradeContract {
-    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
+    pub fn initialize(env: Env, admin: Address, treasury: Address) -> Result<(), ContractError> {
         if env.storage().instance().has(&DATA_KEY) {
             return Err(ContractError::AlreadyInitialized);
         }
         admin.require_auth();
         let data = ContractData { admin: admin.clone(), value: 0, max_fee_ceiling: MAX_FEE_CEILING };
         env.storage().instance().set(&DATA_KEY, &data);
-        Self::_extend_instance_ttl(&env);
+        // #439: write treasury once at deployment; never overwritten
+        env.storage().instance().set(&TREASURY_KEY, &treasury);
         Ok(())
     }
 
@@ -657,11 +663,33 @@ impl TimeLockedUpgradeContract {
         Ok(())
     }
 
+    // #439: read-only treasury accessor; no setter exposed
+    pub fn get_treasury(env: Env) -> Result<Address, ContractError> {
+        env.storage().instance().get(&TREASURY_KEY).ok_or(ContractError::NotInitialized)
+    }
+
+    // #423: emergency pause controls
+    pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), ContractError> {
+        admin::set_paused(&env, caller, paused)
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        admin::is_paused(&env)
+    }
+
+    // #432: pre-flight rent check hook
+    pub fn preflight_rent_check(env: Env) {
+        storage::preflight_rent_check(&env)
+    }
+
     // --- Private Helpers ---
 
     fn assert_contract_is_active(env: &Env) -> Result<(), ContractError> {
         if !env.storage().instance().has(&DATA_KEY) {
             return Err(ContractError::NotInitialized);
+        }
+        if admin::is_paused(env) {
+            return Err(ContractError::ContractPaused);
         }
         Ok(())
     }
@@ -774,7 +802,8 @@ mod query_guardrail_tests {
         let result = client.try_get_data();
         assert!(matches!(result, Err(Ok(ContractError::NotInitialized))));
 
-        client.initialize(&admin);
+        let treasury = soroban_sdk::Address::generate(&env);
+        client.initialize(&admin, &treasury);
 
         let data = client.get_data();
         assert_eq!(data.admin, admin);
@@ -786,7 +815,8 @@ mod query_guardrail_tests {
     fn test_get_data_is_idempotent() {
         let (env, client) = setup();
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let treasury = soroban_sdk::Address::generate(&env);
+        client.initialize(&admin, &treasury);
 
         let first_admin = client.get_data().admin;
         let first_value = client.get_data().value;
@@ -803,7 +833,8 @@ mod query_guardrail_tests {
     fn test_is_data_fresh_unknown_asset_returns_false() {
         let (env, client) = setup();
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let treasury = soroban_sdk::Address::generate(&env);
+        client.initialize(&admin, &treasury);
 
         let asset: AssetId = 3897123275; // NGN
         assert!(!client.is_data_fresh(&asset));
@@ -814,7 +845,8 @@ mod query_guardrail_tests {
     fn test_is_data_fresh_transitions_on_staleness() {
         let (env, client) = setup();
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let treasury = soroban_sdk::Address::generate(&env);
+        client.initialize(&admin, &treasury);
 
         let asset: AssetId = 2654435761; // KES
         client.update_heartbeat(&asset, &admin);
@@ -830,7 +862,8 @@ mod query_guardrail_tests {
     fn test_is_data_fresh_does_not_mutate_heartbeat() {
         let (env, client) = setup();
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let treasury = soroban_sdk::Address::generate(&env);
+        client.initialize(&admin, &treasury);
 
         let asset: AssetId = 4026531840; // GHS
         client.update_heartbeat(&asset, &admin);
@@ -849,7 +882,8 @@ mod query_guardrail_tests {
     fn test_query_methods_do_not_interfere() {
         let (env, client) = setup();
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let treasury = soroban_sdk::Address::generate(&env);
+        client.initialize(&admin, &treasury);
 
         let asset: AssetId = 4160749568; // CFA
 
