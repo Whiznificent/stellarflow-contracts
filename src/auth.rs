@@ -17,17 +17,23 @@ pub fn require_multisig(env: &Env, signers: &Vec<Address>) -> Result<(), Contrac
         .get(&DATA_KEY)
         .ok_or(ContractError::NotInitialized)?;
 
-    let mut valid_count = 0;
-    let mut verified: Map<Address, ()> = Map::new(env);
+    let mut valid_count = 0u32;
 
-    for i in 0..signers.len() {
-        let signer = signers.get(i).unwrap();
-        let is_authorized = authorized_signers.contains_key(signer.clone()) || data.admin == signer;
-        
-        if is_authorized && !verified.contains_key(signer.clone()) {
-            signer.require_auth();
-            verified.set(signer.clone(), ());
-            valid_count += 1;
+    for (idx, signer) in signers.iter().enumerate() {
+        // Avoid repeated signature validation for duplicate signers in the same request.
+        if signers.iter().take(idx).any(|previous| previous == signer) {
+            continue;
+        }
+
+        let is_authorized = authorized_signers.contains_key(signer.clone()) || data.admin == *signer;
+        if !is_authorized {
+            continue;
+        }
+
+        signer.require_auth();
+        valid_count += 1;
+        if valid_count >= 2 {
+            break;
         }
     }
 
@@ -35,6 +41,4 @@ pub fn require_multisig(env: &Env, signers: &Vec<Address>) -> Result<(), Contrac
     if valid_count < 4 {
         return Err(ContractError::ThresholdNotReached);
     }
-
-    Ok(())
 }
