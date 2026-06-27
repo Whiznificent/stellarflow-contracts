@@ -1,708 +1,334 @@
-//! Slashing module — malicious node collateral slashing (issue #260).
-//!
-//! When the off-chain monitoring engine flags bad data or extended downtime,
-//! governance can penalise a relayer by calling `execute_slash` (direct admin
-//! path) or by going through the full propose → vote → execute pipeline
-//! (`propose_action` with `action_type = 5`).
-//!
-//! # Flow
-//! 1. Admin(s) call `propose_action(action_type=5, target=bad_relayer, data="<amount>")`.
-//! 2. Other admins vote via `vote_for_action`.
-//! 3. Once the threshold is met, any admin calls `execute_proposed_action`.
-//!    Internally this calls `execute_slash_internal` below.
-//!
-//! Alternatively, a single authorized admin can call `execute_slash` directly
-//! (suitable for single-admin deployments or emergency situations).
-//!
-//! # Storage layout
-//! | Key                              | Type      | Description                              |
-//! |----------------------------------|-----------|------------------------------------------|
-//! | `DataKey::ProviderStake(addr)`             | `i128`    | Staked collateral per relayer (stroops)          |
-//! | `DataKey::ProviderConsecutiveMissedBlocks(addr)` | `u32`     | Consecutive missed-block infractions for a relayer |
-//! | `DataKey::ProviderUptimeStreakStart(addr)` | `u64`     | Timestamp when a relayer began a healthy uptime streak |
-//! | `DataKey::SlashToken`                      | `Address` | SEP-41 token used for staking/slashing           |
-//! | `DataKey::InsuranceReserve`                | `Address` | Destination for slashed funds                    |
+use crate::median::{calculate_median, MedianError};
+use soroban_sdk::{contracttype, Vec};
 
-use soroban_sdk::{token, Address, Env, String, Symbol};
-
-use crate::types::DataKey;
-use crate::Error;
-use crate::SlashExecutedEvent;
-
-const UPTIME_RESET_SECONDS: u64 = 48 * 60 * 60;
-
-/// Maximum fraction of total bond capacity that can be slashed in a single incident.
-///
-/// Enforced to protect honest validator nodes from permanent bankruptcy during
-/// brief network connectivity drops or other transient infrastructure issues.
-/// Set at 25% to preserve meaningful economic deterrence while ensuring no
-/// single incident can remove more than one quarter of a validator's bond.
-///
-/// This cap applies per-incident. Multiple incidents accumulate independently.
-const MAX_SLASH_FRACTION_PER_INCIDENT: u32 = 25; // percent — out of 100
-
-// DEFINITION: "Total bond capacity" is the validator's current staked balance before
-// the penalty is applied. This is the most conservative definition, ensuring that even
-// as a validator's stake decreases over time, no single incident can slash more than
-// 25% of what they currently have at risk. This prevents catastrophic losses from
-// temporary outages while still preserving deterrence for malicious behavior.
-//
-// ALTERNATIVE: Using the initial bond (when the validator joined) would mean the cap
-// is fixed at 25% of their original stake, but that could allow slashing more than
-// 25% of their current stake if they've unstaked some tokens. We choose current stake
-// to protect the validator's current position.
-
-// PENALTY FLOW:
-// 1. Offence detected → classify deviation tier or report missed blocks
-// 2. Get base amount / deviation tier multiplier
-// 3. Apply missed blocks multiplier → calculate raw scaled penalty
-// 4. Apply 25% per-incident cap to raw penalty
-// 5. Apply capped penalty to validator's bond
-// 6. Check if remaining stake is below zero (shouldn't happen due to cap)
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Read the staked balance for a relayer. Returns 0 if no stake has been deposited.
-pub fn get_stake(env: &Env, relayer: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::ProviderStake(relayer.clone()))
-        .unwrap_or(0)
-}
-
-/// Overwrite the staked balance for a relayer.
-fn set_stake(env: &Env, relayer: &Address, amount: i128) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::ProviderStake(relayer.clone()), &amount);
-}
-
-/// Applies the per-incident slashing cap to a raw penalty amount.
-///
-/// Ensures no single incident can slash more than MAX_SLASH_FRACTION_PER_INCIDENT
-/// percent of the validator's total bond capacity, regardless of the raw penalty
-/// computed for the offence type.
-///
-/// # Arguments
-/// * `raw_penalty` - the penalty amount before the cap is applied
-/// * `bond_capacity` - the validator's total bond capacity (current stake before penalty)
-///
-/// # Returns
-/// The lesser of `raw_penalty` and `bond_capacity * MAX_SLASH_FRACTION_PER_INCIDENT / 100`.
-///
-/// # Security
-/// Uses saturating arithmetic throughout — never panics on overflow or underflow.
-/// The cap cannot be bypassed by crafting a large raw_penalty.
-fn apply_slash_cap(raw_penalty: i128, bond_capacity: i128) -> i128 {
-    if bond_capacity <= 0 || raw_penalty <= 0 {
-        return 0;
-    }
-    
-    // ARITHMETIC: saturating — cannot overflow
-    // SECURITY: Use saturating mul and div to prevent overflow
-    let max_penalty = bond_capacity
-        .saturating_mul(MAX_SLASH_FRACTION_PER_INCIDENT as i128)
-        .saturating_div(100);
-    
-    raw_penalty.min(max_penalty)
-}
-
-/// Read the current consecutive missed-block counter for a relayer.
-pub fn get_consecutive_missed_blocks(env: &Env, relayer: &Address) -> u32 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::ProviderConsecutiveMissedBlocks(relayer.clone()))
-        .unwrap_or(0)
-}
-
-/// Overwrite the missed-block counter for a relayer.
-fn set_consecutive_missed_blocks(env: &Env, relayer: &Address, count: u32) {
-    env.storage().persistent().set(
-        &DataKey::ProviderConsecutiveMissedBlocks(relayer.clone()),
-        &count,
-    );
-}
-
-/// Remove the missed-block counter for a relayer.
-fn clear_consecutive_missed_blocks(env: &Env, relayer: &Address) {
-    env.storage()
-        .persistent()
-        .remove(&DataKey::ProviderConsecutiveMissedBlocks(relayer.clone()));
-}
-
-/// Read the relayer uptime streak start timestamp.
-pub fn get_uptime_streak_start(env: &Env, relayer: &Address) -> Option<u64> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::ProviderUptimeStreakStart(relayer.clone()))
-}
-
-/// Store or clear a relayer uptime streak start timestamp.
-fn set_uptime_streak_start(env: &Env, relayer: &Address, timestamp: Option<u64>) {
-    if let Some(ts) = timestamp {
-        env.storage()
-            .persistent()
-            .set(&DataKey::ProviderUptimeStreakStart(relayer.clone()), &ts);
-    } else {
-        env.storage()
-            .persistent()
-            .remove(&DataKey::ProviderUptimeStreakStart(relayer.clone()));
-    }
-}
-
-/// Calculate the exponential slash multiplier from the current consecutive
-/// missed-block counter.
-///
-/// The baseline floor is `1` and the penalty scales exponentially with every
-/// additional consecutive missed block.
-fn calculate_exponential_multiplier(count: u32) -> Result<i128, Error> {
-    if count == 0 {
-        return Ok(1);
-    }
-    let exponent = count.saturating_sub(1);
-    if exponent >= 126 {
-        return Ok(i128::MAX);
-    }
-    Ok(1_i128
-        .checked_shl(exponent)
-        .ok_or(Error::InvalidInfractionCount)?)
-}
-
-/// Get the effective slashing multiplier for the relayer.
-pub fn get_slash_multiplier(env: &Env, relayer: &Address) -> Result<i128, Error> {
-    let count = get_consecutive_missed_blocks(env, relayer);
-    calculate_exponential_multiplier(count)
-}
-
-/// Report that a relayer missed one or more consecutive blocks.
-///
-/// This increments the infraction counter and clears any uptime streak. The
-/// resulting multiplier will scale future slashes exponentially.
-pub fn report_missed_blocks(
-    env: &Env,
-    relayer: &Address,
-    missed_blocks: u32,
-) -> Result<i128, Error> {
-    if missed_blocks == 0 {
-        return Err(Error::InvalidInfractionCount);
-    }
-
-    let current = get_consecutive_missed_blocks(env, relayer);
-    let next = current
-        .checked_add(missed_blocks)
-        .ok_or(Error::InvalidInfractionCount)?;
-    set_consecutive_missed_blocks(env, relayer, next);
-    set_uptime_streak_start(env, relayer, None);
-
-    calculate_exponential_multiplier(next)
-}
-
-/// Report a period of uninterrupted uptime for a relayer.
-///
-/// The relayer's infraction counter is reset only after a full 48-hour streak
-/// of healthy uptime.
-pub fn report_successful_uptime(env: &Env, relayer: &Address) -> Result<bool, Error> {
-    let current = get_consecutive_missed_blocks(env, relayer);
-    if current == 0 {
-        return Ok(false);
-    }
-
-    let now = env.ledger().timestamp();
-    match get_uptime_streak_start(env, relayer) {
-        None => {
-            set_uptime_streak_start(env, relayer, Some(now));
-            Ok(false)
-        }
-        Some(start_ts) => {
-            if now >= start_ts.saturating_add(UPTIME_RESET_SECONDS) {
-                clear_consecutive_missed_blocks(env, relayer);
-                set_uptime_streak_start(env, relayer, None);
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        }
-    }
-}
-
-/// Parse a slash amount from the governance proposal's `data` string.
-///
-/// The data field is expected to contain a plain decimal integer string,
-/// e.g. `"5000000000"` (5 000 000 000 stroops = 500 tokens at 7 decimals).
-///
-/// Returns `Error::InvalidSlashAmount` if the string is empty, contains
-/// non-digit characters, or would overflow `i128`.
-pub fn parse_slash_amount(_env: &Env, data: &String) -> Result<i128, Error> {
-    let len = data.len() as usize;
-    if len == 0 {
-        return Err(Error::InvalidSlashAmount);
-    }
-
-    // i128::MAX is 39 digits; 40 bytes is a safe upper bound.
-    if len > 39 {
-        return Err(Error::InvalidSlashAmount);
-    }
-
-    // Copy the string bytes into a stack-allocated buffer.
-    let mut buf = [0u8; 39];
-    data.copy_into_slice(&mut buf[..len]);
-
-    let mut result: i128 = 0;
-    for i in 0..len {
-        let ch = buf[i];
-        if ch < b'0' || ch > b'9' {
-            return Err(Error::InvalidSlashAmount);
-        }
-        let digit = (ch - b'0') as i128;
-        result = result
-            .checked_mul(10)
-            .and_then(|v| v.checked_add(digit))
-            .ok_or(Error::InvalidSlashAmount)?;
-    }
-
-    if result <= 0 {
-        return Err(Error::InvalidSlashAmount);
-    }
-
-    Ok(result)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Core slash logic
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Execute a slash against a relayer's staked collateral.
-///
-/// This is the single authoritative implementation called by both:
-/// - `PriceOracle::execute_slash` (direct admin path), and
-/// - the `AdminAction::Slash` arm inside `execute_proposed_action` (governance pipeline).
-///
-/// # Preconditions (checked by callers before this function is invoked)
-/// - Contract is not destroyed.
-/// - Contract is not frozen.
-/// - `executor` has provided auth and is an authorized admin.
-///
-/// # Checks performed here
-/// - `amount` must be > 0.
-/// - `SlashToken` must be configured.
-/// - `InsuranceReserve` must be configured.
-/// - `bad_relayer` must have a stake ≥ the scaled penalty amount.
-///
-/// The slashing amount is scaled by the relayer's current consecutive missed-
-/// block multiplier, which grows exponentially with repeated outages.
-///
-/// # Effects
-/// 1. Calculates the effective slashing penalty after multiplier scaling.
-/// 2. Deducts that amount from `bad_relayer`'s on-chain stake balance.
-/// 3. Transfers the scaled amount from the contract's custody to the insurance reserve.
-/// 4. If the relayer's remaining stake reaches zero, removes them from the
-///    active provider whitelist (they can re-stake and be re-added later).
-/// 5. Emits a `SlashExecutedEvent`.
-pub fn execute_slash_internal(
-    env: &Env,
-    executor: &Address,
-    bad_relayer: &Address,
-    amount: i128,
-) -> Result<(), Error> {
-    // ── Validate amount ──────────────────────────────────────────────────────
-    if amount <= 0 {
-        return Err(Error::InvalidSlashAmount);
-    }
-
-    // ── Get current stake first (this is our bond capacity for the cap) ─────
-    let current_stake = get_stake(env, bad_relayer);
-
-    // ── Compute scaled penalty based on relayer uptime/downtime history. ─────
-    let multiplier = get_slash_multiplier(env, bad_relayer)?;
-    let raw_slashed_amount = amount
-        .checked_mul(multiplier)
-        .ok_or(Error::InvalidSlashAmount)?;
-    
-    // CAP APPLIED: Enforce 25% per-incident cap here before applying penalty
-    let slashed_amount = apply_slash_cap(raw_slashed_amount, current_stake);
-
-    // ── Resolve token and reserve ────────────────────────────────────────────
-    let token_address: Address = env
-        .storage()
-        .persistent()
-        .get(&DataKey::SlashToken)
-        .ok_or(Error::SlashTokenNotSet)?;
-
-    let reserve: Address = env
-        .storage()
-        .persistent()
-        .get(&DataKey::InsuranceReserve)
-        .ok_or(Error::InsuranceReserveNotSet)?;
-
-    // ── Check stake balance ──────────────────────────────────────────────────
-    if slashed_amount > current_stake {
-        return Err(Error::InsufficientStake);
-    }
-
-    // ── Deduct stake ─────────────────────────────────────────────────────────
-    // ARITHMETIC: saturating subtraction to prevent underflow
-    let remaining_stake = current_stake.saturating_sub(slashed_amount);
-    set_stake(env, bad_relayer, remaining_stake);
-
-    // ── Transfer slashed tokens to the insurance reserve ─────────────────────
-    // The contract holds the staked tokens in its own custody, so we transfer
-    // from `current_contract_address()` to the reserve.
-    let token_client = token::Client::new(env, &token_address);
-    token_client.transfer(&env.current_contract_address(), &reserve, &slashed_amount);
-
-    // ── Auto-delist relayer if fully slashed ─────────────────────────────────
-    // A relayer with zero stake can no longer be trusted to submit prices.
-    // Remove them from the whitelist so they cannot submit until they re-stake
-    // and are explicitly re-added by an admin.
-    if remaining_stake == 0 {
-        crate::auth::_remove_provider(env, bad_relayer);
-    }
-
-    // ── Emit event ───────────────────────────────────────────────────────────
-    env.events().publish(
-        (Symbol::new(env, "slash_executed_event"),),
-        (
-            bad_relayer.clone(),
-            amount,
-            reserve.clone(),
-            executor.clone(),
-        ),
-    );
-
-    // Also publish a plain tuple event for off-chain indexers that don't parse
-    // the typed event schema.
-    env.events().publish(
-        (Symbol::new(env, "slash_executed"),),
-        (
-            bad_relayer.clone(),
-            slashed_amount,
-            reserve,
-            executor.clone(),
-            remaining_stake,
-        ),
-    );
-
-    Ok(())
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Deviation-based tiered slashing
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Classification of a price submission's deviation from the consensus median.
-///
-/// Tiers are expressed in basis points (bps), where 100 bps = 1 %.
-/// The `Noise` tier (< 50 bps) represents normal network variance and carries
-/// no penalty.  Higher tiers indicate increasingly intentional manipulation and
-/// attract proportionally larger slash multipliers.
+/// Discrete slashing tiers used to differentiate small communication noise from deliberate manipulation.
+#[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum DeviationTier {
-    /// < 50 bps — network noise or minor communication delay.  No penalty.
-    Noise,
-    /// 50 – 199 bps — minor deviation.  1× base multiplier.
-    Minor,
-    /// 200 – 499 bps — moderate deviation.  3× base multiplier.
-    Moderate,
-    /// 500 – 999 bps — significant deviation.  7× base multiplier.
-    Significant,
-    /// ≥ 1 000 bps — extreme deviation consistent with price manipulation.  15× base multiplier.
-    Manipulation,
+pub enum SlashingTier {
+    NoPenalty,
+    Low,
+    Medium,
+    High,
+    Critical,
 }
 
-/// Map a raw deviation in basis points to the corresponding [`DeviationTier`].
-pub fn classify_deviation(deviation_bps: u32) -> DeviationTier {
-    if deviation_bps < 50 {
-        DeviationTier::Noise
-    } else if deviation_bps < 200 {
-        DeviationTier::Minor
-    } else if deviation_bps < 500 {
-        DeviationTier::Moderate
-    } else if deviation_bps < 1_000 {
-        DeviationTier::Significant
+/// The result of comparing a faulty provider's submitted price against the consensus median.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviationAnalysis {
+    pub submitted_price: i128,
+    pub finalized_median_price: i128,
+    pub deviation_bps: u128,
+    pub slashing_bps: u32,
+    pub tier: SlashingTier,
+}
+
+impl SlashingTier {
+    pub fn from_deviation_bps(deviation_bps: u128) -> Self {
+        match deviation_bps {
+            0..=100 => SlashingTier::NoPenalty,
+            101..=250 => SlashingTier::Low,
+            251..=500 => SlashingTier::Medium,
+            501..=1_000 => SlashingTier::High,
+            _ => SlashingTier::Critical,
+        }
+    }
+
+    pub fn burn_rate_bps(self) -> u32 {
+        match self {
+            SlashingTier::NoPenalty => 0,
+            SlashingTier::Low => 50,
+            SlashingTier::Medium => 150,
+            SlashingTier::High => 400,
+            SlashingTier::Critical => 1_000,
+        }
+    }
+}
+
+/// Calculate the absolute price deviation from the finalized consensus median in basis points.
+/// Returns `None` when the consensus median is zero or when the result cannot be computed safely.
+pub fn calculate_price_deviation_bps(submitted_price: i128, finalized_median_price: i128) -> Option<u128> {
+    if finalized_median_price <= 0 {
+        return None;
+    }
+
+    let deviation = if submitted_price >= finalized_median_price {
+        submitted_price - finalized_median_price
     } else {
-        DeviationTier::Manipulation
-    }
+        finalized_median_price - submitted_price
+    };
+
+    let numerator = (deviation as u128).checked_mul(10_000)?;
+    let denominator = finalized_median_price as u128;
+    Some(numerator / denominator)
 }
 
-/// Return the slash multiplier associated with a [`DeviationTier`].
-///
-/// A multiplier of `0` means no slash is applied (Noise tier).
-/// The multiplier is applied on top of the relayer's existing missed-block
-/// multiplier inside [`report_price_deviation`], so the total penalty grows
-/// proportionally with *both* the severity of the deviation *and* the
-/// relayer's prior infraction history.
-pub fn deviation_multiplier(tier: DeviationTier) -> i128 {
-    match tier {
-        DeviationTier::Noise => 0,
-        DeviationTier::Minor => 1,
-        DeviationTier::Moderate => 3,
-        DeviationTier::Significant => 7,
-        DeviationTier::Manipulation => 15,
-    }
+/// Convert a deviation into a slashing burn rate in basis points using a tiered scale.
+pub fn calculate_slashing_bps(deviation_bps: u128) -> u32 {
+    SlashingTier::from_deviation_bps(deviation_bps).burn_rate_bps()
 }
 
-/// Evaluate a relayer's price submission against the finalized consensus median
-/// and apply a proportional slash when the deviation crosses a meaningful threshold.
+/// Analyze a faulty node price submission against a finalized median consensus price set.
 ///
-/// This function distinguishes accidental network hiccups (< 50 bps) from
-/// deliberate price manipulation (≥ 1 000 bps), applying a larger penalty the
-/// further the submitted price strays from the consensus.
-///
-/// # Penalty model
-/// ```text
-/// final_penalty = base_slash_amount × tier_multiplier × missed_blocks_multiplier
-/// ```
-/// where `tier_multiplier` comes from [`deviation_multiplier`] and
-/// `missed_blocks_multiplier` is the exponential penalty already accumulated
-/// from the relayer's downtime history (see [`execute_slash_internal`]).
-///
-/// # Parameters
-/// - `executor`: the admin address triggering this evaluation.
-/// - `relayer`: the provider whose submission is under review.
-/// - `submitted_price`: price the relayer submitted, normalized to 9 decimals.
-/// - `consensus_price`: finalized median price at the same precision.
-/// - `base_slash_amount`: base token amount to slash before tier scaling.
-///
-/// # Returns
-/// The tier-scaled amount passed to the slash engine (`0` for the Noise tier),
-/// or an error.  The actual token deducted from the relayer's stake is
-/// `base_slash_amount × tier_multiplier × missed_blocks_multiplier`.
-pub fn report_price_deviation(
-    env: &Env,
-    executor: &Address,
-    relayer: &Address,
+/// This returns the computed median, the absolute deviation in basis points, and
+/// a burn rate that grows with the magnitude of the deviation.
+pub fn analyze_deviation_against_finalized_median(
     submitted_price: i128,
-    consensus_price: i128,
-    base_slash_amount: i128,
-) -> Result<i128, Error> {
-    let deviation_bps =
-        crate::math::calculate_deviation_bps(submitted_price, consensus_price)?;
-    let tier = classify_deviation(deviation_bps);
-    let tier_mult = deviation_multiplier(tier);
+    consensus_prices: Vec<i128>,
+) -> Result<DeviationAnalysis, MedianError> {
+    let finalized_median_price = calculate_median(consensus_prices)?;
+    let deviation_bps = calculate_price_deviation_bps(submitted_price, finalized_median_price)
+        .unwrap_or(0);
+    let tier = SlashingTier::from_deviation_bps(deviation_bps);
+    let slashing_bps = tier.burn_rate_bps();
 
-    // Persist for audit and off-chain indexing regardless of tier.
+    Ok(DeviationAnalysis {
+        submitted_price,
+        finalized_median_price,
+        deviation_bps,
+        slashing_bps,
+        tier,
+    })
+use soroban_sdk::{contractevent, contracttype, Address, Env};
+
+use crate::Error;
+
+pub const MIN_UNBONDING_DELAY_LEDGERS: u32 = 10_000;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnbondingRequest {
+    pub validator: Address,
+    pub amount: i128,
+    pub requested_ledger: u32,
+    pub release_ledger: u32,
+    pub released: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+enum DataKey {
+    Unbonding(Address),
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnbondingQueued {
+    pub validator: Address,
+    pub amount: i128,
+    pub requested_ledger: u32,
+    pub release_ledger: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnbondingReleased {
+    pub validator: Address,
+    pub amount: i128,
+    pub release_ledger: u32,
+}
+
+pub fn request_unbonding(
+    env: &Env,
+    validator: &Address,
+    amount: i128,
+) -> Result<UnbondingRequest, Error> {
+    if amount <= 0 {
+        return Err(Error::InvalidStakeAmount);
+    }
+
+    validator.require_auth();
+
+    if let Some(existing) = get_unbonding_request(env, validator) {
+        if !existing.released {
+            return Err(Error::UnbondingAlreadyQueued);
+        }
+    }
+
+    let requested_ledger = env.ledger().sequence();
+    let release_ledger = requested_ledger
+        .checked_add(MIN_UNBONDING_DELAY_LEDGERS)
+        .ok_or(Error::LedgerSequenceOverflow)?;
+    let request = UnbondingRequest {
+        validator: validator.clone(),
+        amount,
+        requested_ledger,
+        release_ledger,
+        released: false,
+    };
+
     env.storage()
         .persistent()
-        .set(&DataKey::ProviderLastDeviationBps(relayer.clone()), &deviation_bps);
+        .set(&DataKey::Unbonding(validator.clone()), &request);
 
-    // Noise tier — record only, no slash.
-    if tier_mult == 0 {
-        return Ok(0);
+    UnbondingQueued {
+        validator: validator.clone(),
+        amount,
+        requested_ledger,
+        release_ledger,
     }
+    .publish(env);
 
-    // Scale the base amount by the tier multiplier.
-    // execute_slash_internal will then further multiply by the missed-blocks
-    // multiplier, yielding: final = base × tier_mult × missed_blocks_mult.
-    let tier_scaled = base_slash_amount
-        .checked_mul(tier_mult)
-        .ok_or(Error::InvalidSlashAmount)?;
-
-    execute_slash_internal(env, executor, relayer, tier_scaled)?;
-
-    env.events().publish(
-        (Symbol::new(env, "deviation_slash"),),
-        (
-            relayer.clone(),
-            submitted_price,
-            consensus_price,
-            deviation_bps,
-            tier_mult,
-            tier_scaled,
-        ),
-    );
-
-    Ok(tier_scaled)
+    Ok(request)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
+pub fn release_unbonded_stake(env: &Env, validator: &Address) -> Result<i128, Error> {
+    validator.require_auth();
+
+    let key = DataKey::Unbonding(validator.clone());
+    let mut request = env
+        .storage()
+        .persistent()
+        .get::<DataKey, UnbondingRequest>(&key)
+        .ok_or(Error::UnbondingRequestNotFound)?;
+
+    if request.released {
+        return Err(Error::UnbondingAlreadyReleased);
+    }
+
+    let current_ledger = env.ledger().sequence();
+    if current_ledger < request.release_ledger {
+        return Err(Error::UnbondingDelayActive);
+    }
+
+    request.released = true;
+    env.storage().persistent().set(&key, &request);
+
+    UnbondingReleased {
+        validator: validator.clone(),
+        amount: request.amount,
+        release_ledger: current_ledger,
+    }
+    .publish(env);
+
+    Ok(request.amount)
+}
+
+pub fn get_unbonding_request(env: &Env, validator: &Address) -> Option<UnbondingRequest> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Unbonding(validator.clone()))
+}
 
 #[cfg(test)]
-mod slashing_tests {
+mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{Env, String};
-
-    // ── parse_slash_amount ────────────────────────────────────────────────────
+    use soroban_sdk::{vec, Env};
 
     #[test]
-    fn test_parse_slash_amount_valid() {
+    fn test_calculate_price_deviation_bps_returns_none_for_zero_median() {
+        assert_eq!(calculate_price_deviation_bps(1_000_000, 0), None);
+    }
+
+    #[test]
+    fn test_calculate_price_deviation_bps_small_deviation() {
+        assert_eq!(calculate_price_deviation_bps(1_001_000, 1_000_000), Some(100));
+        assert_eq!(calculate_price_deviation_bps(999_000, 1_000_000), Some(100));
+    }
+
+    #[test]
+    fn test_calculate_slashing_bps_tiers() {
+        assert_eq!(calculate_slashing_bps(0), 0);
+        assert_eq!(calculate_slashing_bps(150), 50);
+        assert_eq!(calculate_slashing_bps(300), 150);
+        assert_eq!(calculate_slashing_bps(750), 400);
+        assert_eq!(calculate_slashing_bps(2_500), 1_000);
+    }
+
+    #[test]
+    fn test_analyze_deviation_against_finalized_median() {
         let env = Env::default();
-        let s = String::from_str(&env, "5000000000");
-        assert_eq!(parse_slash_amount(&env, &s).unwrap(), 5_000_000_000_i128);
+        let prices = vec![&env, 10_000_i128, 10_100_i128, 9_900_i128, 11_000_i128];
+
+        let analysis = analyze_deviation_against_finalized_median(11_500, prices).unwrap();
+
+        assert_eq!(analysis.finalized_median_price, 10_050);
+        assert_eq!(analysis.deviation_bps, 1_447);
+        assert_eq!(analysis.tier, SlashingTier::Critical);
+        assert_eq!(analysis.slashing_bps, 1_000);
     }
 
     #[test]
-    fn test_parse_slash_amount_single_digit() {
+    fn test_slashing_tier_for_minor_node_hiccup() {
+        assert_eq!(SlashingTier::from_deviation_bps(100), SlashingTier::NoPenalty);
+        assert_eq!(SlashingTier::from_deviation_bps(180), SlashingTier::Low);
+    use soroban_sdk::{contract, contractimpl, testutils::Address as _, testutils::Ledger};
+
+    #[contract]
+    struct TestContract;
+
+    #[contractimpl]
+    impl TestContract {}
+
+    fn setup() -> (Env, Address, Address) {
         let env = Env::default();
-        let s = String::from_str(&env, "1");
-        assert_eq!(parse_slash_amount(&env, &s).unwrap(), 1_i128);
+        env.mock_all_auths();
+        let contract_id = env.register(TestContract, ());
+        let validator = Address::generate(&env);
+        (env, contract_id, validator)
     }
 
     #[test]
-    fn test_parse_slash_amount_empty_fails() {
-        let env = Env::default();
-        let s = String::from_str(&env, "");
-        assert_eq!(parse_slash_amount(&env, &s), Err(Error::InvalidSlashAmount));
+    fn request_queues_unbonding_for_minimum_delay() {
+        let (env, contract_id, validator) = setup();
+        env.ledger().set_sequence_number(250);
+
+        env.as_contract(&contract_id, || {
+            let request = request_unbonding(&env, &validator, 1_500).unwrap();
+
+            assert_eq!(request.amount, 1_500);
+            assert_eq!(request.requested_ledger, 250);
+            assert_eq!(request.release_ledger, 10_250);
+            assert!(!request.released);
+            assert_eq!(get_unbonding_request(&env, &validator), Some(request));
+        });
     }
 
     #[test]
-    fn test_parse_slash_amount_zero_fails() {
-        let env = Env::default();
-        let s = String::from_str(&env, "0");
-        assert_eq!(parse_slash_amount(&env, &s), Err(Error::InvalidSlashAmount));
+    fn release_fails_before_delay_expires() {
+        let (env, contract_id, validator) = setup();
+        env.ledger().set_sequence_number(1);
+
+        env.as_contract(&contract_id, || {
+            request_unbonding(&env, &validator, 900).unwrap();
+            env.ledger()
+                .set_sequence_number(MIN_UNBONDING_DELAY_LEDGERS);
+
+            assert_eq!(
+                release_unbonded_stake(&env, &validator),
+                Err(Error::UnbondingDelayActive)
+            );
+        });
     }
 
     #[test]
-    fn test_parse_slash_amount_non_digit_fails() {
-        let env = Env::default();
-        let s = String::from_str(&env, "100abc");
-        assert_eq!(parse_slash_amount(&env, &s), Err(Error::InvalidSlashAmount));
-    }
+    fn release_succeeds_at_exact_delay_boundary() {
+        let (env, contract_id, validator) = setup();
+        env.ledger().set_sequence_number(1);
 
-    // ── get_stake / set_stake ─────────────────────────────────────────────────
+        env.as_contract(&contract_id, || {
+            request_unbonding(&env, &validator, 900).unwrap();
+            env.ledger()
+                .set_sequence_number(1 + MIN_UNBONDING_DELAY_LEDGERS);
 
-    #[test]
-    fn test_get_stake_returns_zero_when_unset() {
-        let env = Env::default();
-        let relayer = Address::generate(&env);
-        assert_eq!(get_stake(&env, &relayer), 0);
-    }
-
-    #[test]
-    fn test_set_and_get_stake() {
-        let env = Env::default();
-        let relayer = Address::generate(&env);
-        set_stake(&env, &relayer, 1_000_000);
-        assert_eq!(get_stake(&env, &relayer), 1_000_000);
+            assert_eq!(release_unbonded_stake(&env, &validator), Ok(900));
+            let released = get_unbonding_request(&env, &validator).unwrap();
+            assert!(released.released);
+        });
     }
 
     #[test]
-    fn test_report_missed_blocks_updates_count_and_multiplier() {
-        let env = Env::default();
-        let relayer = Address::generate(&env);
+    fn duplicate_pending_unbonding_is_rejected() {
+        let (env, contract_id, validator) = setup();
 
-        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 0);
-        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
+        env.as_contract(&contract_id, || {
+            request_unbonding(&env, &validator, 900).unwrap();
 
-        let multiplier = report_missed_blocks(&env, &relayer, 1).unwrap();
-        assert_eq!(multiplier, 1);
-        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 1);
-        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
-
-        let multiplier = report_missed_blocks(&env, &relayer, 1).unwrap();
-        assert_eq!(multiplier, 2);
-        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
-        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 2);
-    }
-
-    #[test]
-    fn test_report_successful_uptime_resets_after_48_hours() {
-        let env = Env::default();
-        let relayer = Address::generate(&env);
-
-        report_missed_blocks(&env, &relayer, 2).unwrap();
-        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
-        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 2);
-
-        env.ledger().set_timestamp(1_000);
-        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), false);
-        assert_eq!(get_uptime_streak_start(&env, &relayer), Some(1_000));
-        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
-
-        env.ledger().set_timestamp(1_000 + UPTIME_RESET_SECONDS - 1);
-        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), false);
-        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
-
-        env.ledger().set_timestamp(1_000 + UPTIME_RESET_SECONDS);
-        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), true);
-        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 0);
-        assert_eq!(get_uptime_streak_start(&env, &relayer), None);
-        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
-    }
-
-    // ── classify_deviation ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_classify_deviation_noise() {
-        assert_eq!(classify_deviation(0), DeviationTier::Noise);
-        assert_eq!(classify_deviation(49), DeviationTier::Noise);
-    }
-
-    #[test]
-    fn test_classify_deviation_minor() {
-        assert_eq!(classify_deviation(50), DeviationTier::Minor);
-        assert_eq!(classify_deviation(199), DeviationTier::Minor);
-    }
-
-    #[test]
-    fn test_classify_deviation_moderate() {
-        assert_eq!(classify_deviation(200), DeviationTier::Moderate);
-        assert_eq!(classify_deviation(499), DeviationTier::Moderate);
-    }
-
-    #[test]
-    fn test_classify_deviation_significant() {
-        assert_eq!(classify_deviation(500), DeviationTier::Significant);
-        assert_eq!(classify_deviation(999), DeviationTier::Significant);
-    }
-
-    #[test]
-    fn test_classify_deviation_manipulation() {
-        assert_eq!(classify_deviation(1_000), DeviationTier::Manipulation);
-        assert_eq!(classify_deviation(u32::MAX), DeviationTier::Manipulation);
-    }
-
-    // ── deviation_multiplier ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_deviation_multiplier_noise_is_zero() {
-        assert_eq!(deviation_multiplier(DeviationTier::Noise), 0);
-    }
-
-    #[test]
-    fn test_deviation_multiplier_tiers() {
-        assert_eq!(deviation_multiplier(DeviationTier::Minor), 1);
-        assert_eq!(deviation_multiplier(DeviationTier::Moderate), 3);
-        assert_eq!(deviation_multiplier(DeviationTier::Significant), 7);
-        assert_eq!(deviation_multiplier(DeviationTier::Manipulation), 15);
-    }
-
-    // ── calculate_deviation_bps (via math module) ─────────────────────────────
-
-    #[test]
-    fn test_deviation_bps_identical_prices() {
-        assert_eq!(crate::math::calculate_deviation_bps(10_000, 10_000), Ok(0));
-    }
-
-    #[test]
-    fn test_deviation_bps_one_percent() {
-        // submitted is 1 % above consensus → 100 bps
-        assert_eq!(crate::math::calculate_deviation_bps(10_100, 10_000), Ok(100));
-    }
-
-    #[test]
-    fn test_deviation_bps_below_consensus() {
-        // submitted is 2 % below consensus → 200 bps
-        assert_eq!(crate::math::calculate_deviation_bps(9_800, 10_000), Ok(200));
-    }
-
-    #[test]
-    fn test_deviation_bps_zero_consensus_returns_error() {
-        assert_eq!(
-            crate::math::calculate_deviation_bps(500, 0),
-            Err(crate::Error::DeviationConsensusZero)
-        );
-    }
-
-    #[test]
-    fn test_deviation_bps_extreme_submitted_saturates() {
-        // i128::MAX submitted vs consensus 1 — overflows internally, saturates to u32::MAX
-        let result = crate::math::calculate_deviation_bps(i128::MAX, 1);
-        assert_eq!(result, Ok(u32::MAX));
+            assert_eq!(
+                request_unbonding(&env, &validator, 700),
+                Err(Error::UnbondingAlreadyQueued)
+            );
+        });
     }
 
     // ── Test 1-10: apply_slash_cap and penalty cap ─────────────────────────────

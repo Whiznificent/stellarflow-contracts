@@ -88,7 +88,11 @@ pub fn unsubscribe(env: &Env, callback_contract: &Address) -> Result<(), crate::
 ///   processing other subscribers. This ensures one failed callback doesn't block updates.
 /// - Gas considerations: Callbacks consume gas; if too many subscribers exist,
 ///   the transaction might fail due to gas limits. Consider pagination if needed.
+/// - Reentrancy protection: Acquires a lock before invoking callbacks to prevent
+///   reentrant calls that could manipulate contract state during callback execution.
 pub fn notify_subscribers(env: &Env, payload: &PriceUpdatePayload) {
+    crate::reentrancy::acquire_lock(env);
+    
     let subscribers = get_subscribers(env);
 
     for subscriber in subscribers.iter() {
@@ -99,6 +103,8 @@ pub fn notify_subscribers(env: &Env, payload: &PriceUpdatePayload) {
         // from blocking all price updates. However, in a production system,
         // you might want to log these errors to an event or metrics system.
     }
+    
+    crate::reentrancy::release_lock(env);
 }
 
 /// Attempt to invoke the `on_price_update` callback on a single contract.

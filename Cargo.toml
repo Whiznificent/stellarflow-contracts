@@ -18,14 +18,14 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-soroban-sdk = { version = "20.0.0", features = ["testutils"] }
+soroban-sdk = { version = "=20.0.0", features = ["testutils"] }
 
 [dependencies]
-soroban-sdk = { version = "20.0.0", features = ["testutils"] }
-soroban-token-sdk = "20.0.0"
+soroban-sdk = { version = "=20.0.0", features = ["testutils"] }
+soroban-token-sdk = "=20.0.0"
 
 [dev-dependencies]
-soroban-sdk = { version = "20.0.0", features = ["testutils"] }
+soroban-sdk = { version = "=20.0.0", features = ["testutils"] }
 
 [lib]
 crate-type = ["cdylib"]

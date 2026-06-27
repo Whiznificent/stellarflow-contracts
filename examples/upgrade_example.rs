@@ -19,7 +19,7 @@ pub fn example_upgrade_flow() {
     
     // Step 2: Prepare new WASM hash
     // This would be the hash of your new contract code
-    let new_wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let _new_wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
     println!("📦 New WASM hash prepared");
     
     // Step 3: Propose upgrade (starts 48-hour timelock)
@@ -43,7 +43,7 @@ pub fn example_upgrade_flow() {
 
 // Example of checking upgrade status
 pub fn example_status_check() {
-    let env = Env::default();
+    let _env = Env::default();
     
     println!("📊 Checking contract upgrade status:");
     

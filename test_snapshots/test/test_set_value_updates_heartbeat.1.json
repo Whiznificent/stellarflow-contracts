@@ -43,6 +43,12 @@
                   "u64": 0
                 },
                 {
+                  "bytes": "7365742d76616c75652d31"
+                },
+                {
+                  "bytes": "222a23b0ef9f554cd05bc46dfaef7f7d53b4722b5e8b8f6f430adfe601139f67"
+                },
+                {
                   "u64": 18446744073709551615
                 }
               ]
@@ -72,6 +78,12 @@
                 },
                 {
                   "u64": 1
+                },
+                {
+                  "bytes": "7365742d76616c75652d32"
+                },
+                {
+                  "bytes": "7dab7291dd7654bd8d6446d5c92aa55963f03f7c3d91265d81e1efefdb37db7f"
                 },
                 {
                   "u64": 18446744073709551615
@@ -142,7 +154,7 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "Nonce"
+                  "symbol": "State"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -162,7 +174,7 @@
                 "key": {
                   "vec": [
                     {
-                      "symbol": "Nonce"
+                      "symbol": "State"
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -171,7 +183,24 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "u64": 2
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "nonce"
+                      },
+                      "val": {
+                        "u64": 2
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "salt_signature"
+                      },
+                      "val": {
+                        "bytes": "7dab7291dd7654bd8d6446d5c92aa55963f03f7c3d91265d81e1efefdb37db7f"
+                      }
+                    }
+                  ]
                 }
               }
             },
@@ -487,6 +516,12 @@
                   "u64": 0
                 },
                 {
+                  "bytes": "7365742d76616c75652d31"
+                },
+                {
+                  "bytes": "222a23b0ef9f554cd05bc46dfaef7f7d53b4722b5e8b8f6f430adfe601139f67"
+                },
+                {
                   "u64": 18446744073709551615
                 }
               ]
@@ -692,6 +727,12 @@
                 },
                 {
                   "u64": 1
+                },
+                {
+                  "bytes": "7365742d76616c75652d32"
+                },
+                {
+                  "bytes": "7dab7291dd7654bd8d6446d5c92aa55963f03f7c3d91265d81e1efefdb37db7f"
                 },
                 {
                   "u64": 18446744073709551615
