@@ -1,6 +1,6 @@
 use soroban_sdk::contracttype;
 
-const MIN_LEDGER_DELAY: u32 = 5000;
+pub const MIN_LEDGER_DELAY: u32 = 5000;
 
 #[contracttype]
 pub struct StagedUpgrade {

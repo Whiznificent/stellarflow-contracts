@@ -14,6 +14,8 @@ pub fn extend_subscription_rent(env: &Env, consumer_id: Address) {
     env.storage().persistent().extend_ttl(&key, RENT_THRESHOLD, RENT_EXTEND_TO);
 }
 
+pub fn preflight_rent_check(_env: &Env) {}
+
 pub fn check_subscription(env: &Env, consumer_id: Address) -> bool {
     let key = DataKey::Subscription(consumer_id.clone());
     if env.storage().persistent().has(&key) {
