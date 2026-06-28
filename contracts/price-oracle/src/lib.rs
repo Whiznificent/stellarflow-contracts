@@ -135,6 +135,16 @@ pub trait StellarFlowTrait {
     /// This allows clients to quickly verify admin status without fetching the full admin address.
     fn is_admin(env: Env, user: Address) -> bool;
 
+    /// Emergency revocation for a compromised admin or provider key.
+    ///
+    /// The caller must be an authorized coordinator/admin member. A successful
+    /// revocation immediately marks the target as revoked so it can no longer
+    /// exercise admin or provider permissions.
+    fn revoke_key(env: Env, coordinator: Address, target: Address) -> bool;
+
+    /// Returns whether a key has been revoked.
+    fn is_revoked(env: Env, target: Address) -> bool;
+
     /// Start an admin transfer by setting a pending admin and timestamp.
     fn transfer_admin(env: Env, current_admin: Address, new_admin: Address);
 
@@ -1297,6 +1307,22 @@ impl PriceOracle {
     /// Returns true if the supplied address is one of the admin addresses.
     pub fn is_admin(env: Env, user: Address) -> bool {
         crate::auth::_is_authorized(&env, &user)
+    }
+
+    /// Emergency revocation for a compromised admin or coordinator hot-wallet key.
+    ///
+    /// This is intended for the multi-sig coordinator/admin group to use in
+    /// response to a suspected compromise. A successful revocation immediately
+    /// removes the target from the admin/provider sets and marks it as revoked.
+    pub fn revoke_key(env: Env, coordinator: Address, target: Address) -> bool {
+        coordinator.require_auth();
+        crate::auth::_require_authorized(&env, &coordinator);
+        crate::auth::_revoke_key(&env, &target)
+    }
+
+    /// Returns whether a specific key has been revoked.
+    pub fn is_revoked(env: Env, target: Address) -> bool {
+        crate::auth::_is_revoked(&env, &target)
     }
 
     /// Starts an admin transfer by storing the pending admin and timestamp.

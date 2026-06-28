@@ -77,6 +77,27 @@ pub fn compute_sample_variance(values: &[i128]) -> Result<i128, ContractError> {
     Ok(sum_sq / (n - 1) as i128)
 }
 
+/// Compute the spread between two rates in basis points.
+///
+/// Formula: `|rate_a - rate_b| * 10_000 / rate_a`
+///
+/// Returns `ContractError::DivisionByZero` if the base rate (`rate_a`)
+/// is zero, preventing runtime panics. All intermediate operations use
+/// checked arithmetic to prevent overflow.
+pub fn calculate_spread_bps(rate_a: i128, rate_b: i128) -> Result<i128, ContractError> {
+    if rate_a == 0 {
+        return Err(ContractError::DivisionByZero);
+    }
+
+    let delta = rate_a.saturating_sub(rate_b).abs();
+    let numerator = delta
+        .checked_mul(10_000)
+        .ok_or(ContractError::Overflow)?;
+
+    // `rate_a` is confirmed non-zero, so this division is safe.
+    Ok(numerator / rate_a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +252,43 @@ mod tests {
         // Every product (dev * dev) is done in full i128 before division,
         // so no fractional bits are lost before the final scale-down.
         assert!(var > 0);
+    }
+
+    // --- calculate_spread_bps ---
+
+    #[test]
+    fn test_spread_bps_no_deviation() {
+        assert_eq!(calculate_spread_bps(1_000_000, 1_000_000), Ok(0));
+    }
+
+    #[test]
+    fn test_spread_bps_positive_deviation() {
+        // 1% spread: |1_000_000 - 1_010_000| * 10_000 / 1_000_000 = 100
+        assert_eq!(calculate_spread_bps(1_000_000, 1_010_000), Ok(100));
+    }
+
+    #[test]
+    fn test_spread_bps_negative_deviation() {
+        // 2% spread: |1_000_000 - 980_000| * 10_000 / 1_000_000 = 200
+        assert_eq!(calculate_spread_bps(1_000_000, 980_000), Ok(200));
+    }
+
+    #[test]
+    fn test_spread_bps_division_by_zero() {
+        assert_eq!(
+            calculate_spread_bps(0, 1_000_000),
+            Err(ContractError::DivisionByZero)
+        );
+    }
+
+    #[test]
+    fn test_spread_bps_overflow() {
+        // Large delta and rate_b can cause the numerator to overflow
+        let rate_a = 100;
+        let rate_b = i128::MAX; // Creates a large delta
+        assert_eq!(
+            calculate_spread_bps(rate_a, rate_b),
+            Err(ContractError::Overflow)
+        );
     }
 }

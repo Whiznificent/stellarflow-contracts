@@ -13,6 +13,7 @@ pub enum DataKey {
     ProviderWeight(Address),
     VoteDelegate(Address),
     IsPaused,
+    Revoked(Address),
     ActiveRelayers,
     CommunityCouncil,
     EmergencyFrozen,
@@ -53,6 +54,10 @@ pub fn _has_admin(env: &Env) -> bool {
 
 /// Check if a caller is in the authorized admin list.
 pub fn _is_authorized(env: &Env, caller: &Address) -> bool {
+    if _is_revoked(env, caller) {
+        return false;
+    }
+
     env.storage()
         .instance()
         .get::<DataKey, Vec<Address>>(&DataKey::Admin)
@@ -68,6 +73,10 @@ pub fn _require_authorized(env: &Env, caller: &Address) {
 
 /// Add an address to the authorized admin list.
 pub fn _add_authorized(env: &Env, new_admin: &Address) {
+    if _is_revoked(env, new_admin) {
+        return;
+    }
+
     let mut admins = _get_admin(env);
     // Avoid duplicates
     if !admins.iter().any(|admin| admin == *new_admin) {
@@ -78,6 +87,10 @@ pub fn _add_authorized(env: &Env, new_admin: &Address) {
 
 /// Remove an address from the authorized admin list.
 pub fn _remove_authorized(env: &Env, admin_to_remove: &Address) {
+    if !_has_admin(env) {
+        return;
+    }
+
     let admins = _get_admin(env);
     let original_len = admins.len();
 
@@ -171,11 +184,47 @@ pub fn _remove_paused(env: &Env) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Revocation Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn _is_revoked(env: &Env, addr: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get::<DataKey, bool>(&DataKey::Revoked(addr.clone()))
+        .unwrap_or(false)
+}
+
+pub fn _set_revoked(env: &Env, addr: &Address, revoked: bool) {
+    if revoked {
+        env.storage().instance().set(&DataKey::Revoked(addr.clone()), &true);
+    } else {
+        env.storage().instance().remove(&DataKey::Revoked(addr.clone()));
+    }
+}
+
+pub fn _revoke_key(env: &Env, addr: &Address) -> bool {
+    if _is_revoked(env, addr) {
+        return false;
+    }
+
+    _set_revoked(env, addr, true);
+    if _has_admin(env) {
+        _remove_authorized(env, addr);
+    }
+    _remove_provider(env, addr);
+    true
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Provider Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Whitelist a provider address.
 pub fn _add_provider(env: &Env, provider: &Address) {
+    if _is_revoked(env, provider) {
+        return;
+    }
+
     env.storage()
         .instance()
         .set(&DataKey::Provider(provider.clone()), &true);
@@ -204,6 +253,11 @@ pub fn _remove_provider(env: &Env, provider: &Address) {
 
 /// Returns `true` if the address is a whitelisted provider OR an authorized delegate.
 pub fn _is_provider(env: &Env, addr: &Address) -> bool {
+    if _is_revoked(env, addr) {
+        return false;
+    }
+
+    env.storage()
     // 1. Direct provider whitelist check
     if env
         .storage()
@@ -230,6 +284,10 @@ pub fn _require_provider(env: &Env, caller: &Address) {
 }
 
 pub fn _set_provider_weight(env: &Env, provider: &Address, weight: u32) {
+    if _is_revoked(env, provider) {
+        return;
+    }
+
     env.storage()
         .instance()
         .set(&DataKey::ProviderWeight(provider.clone()), &weight);
