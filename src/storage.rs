@@ -1,10 +1,57 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Symbol};
 
+/// Fixed-size tuple-based storage keys for gas-optimized lookups.
+/// Replaces dynamic Map structures with direct tuple keys.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Subscription(Address),
 }
+
+/// Tuple-based stake storage key: (node_address) -> stake_amount
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StakeKey(Address);
+
+/// Tuple-based heartbeat storage key: (asset_id) -> timestamp
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HeartbeatKey(u32);
+
+/// Tuple-based node profile storage key: (node_address) -> NodeProfile
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeProfileKey(Address);
+
+/// Tuple-based signer storage key: (signer_address) -> unit
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerKey(Address);
+
+/// Tuple-based revoked signer storage key: (revoked_address) -> unit
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevokedSignerKey(Address);
+
+/// Tuple-based sequence tracker key: (asset_symbol) -> sequence_number
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SequenceKey(Symbol);
+
+/// Tuple-based feed stake storage key: (node_address, asset_symbol) -> stake_amount
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeedStakeKey(Address, Symbol);
+
+/// Tuple-based asset metrics storage key: (asset_symbol) -> AssetFeedMetrics
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetMetricsKey(Symbol);
+
+/// Tuple-based corridor fee pool storage key: (asset_symbol) -> CorridorFeePool
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CorridorFeeKey(Symbol);
 
 pub const RENT_THRESHOLD: u32 = 259_200;
 pub const RENT_EXTEND_TO: u32 = 518_400;
@@ -22,4 +69,11 @@ pub fn check_subscription(env: &Env, consumer_id: Address) -> bool {
     } else {
         false
     }
+}
+
+/// Pre-flight rent check for storage entries
+pub fn preflight_rent_check(env: &Env) {
+    // This hook can be extended to check TTL of critical storage entries
+    // before executing operations that depend on them.
+    // Currently a no-op placeholder for future rent management.
 }

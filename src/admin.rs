@@ -1,5 +1,6 @@
-use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
 use crate::{ContractData, ContractError, DATA_KEY, SIGNERS_KEY, REVOKED_SIGNER_KEY};
+use crate::storage::{SignerKey, RevokedSignerKey};
 
 pub(crate) const PENDING_OWNER_KEY: Symbol = symbol_short!("PNDOWN");
 pub(crate) const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
@@ -26,7 +27,8 @@ pub struct EmergencyRevocationProposal {
     /// Ledger timestamp at proposal time (informational / audit trail).
     pub proposed_at: u64,
     /// Set of addresses that have already voted `aye` on this proposal.
-    pub votes: Map<Address, ()>,
+    /// Using Vec<Address> instead of Map for gas optimization.
+    pub votes: Vec<Address>,
 }
 
 // ── Pending ownership transfer ────────────────────────────────────────────
@@ -64,7 +66,7 @@ pub fn propose_emergency_revocation(
     }
 
     // Only the admin or a registered signer may open a proposal.
-    let is_signer = _get_signers(env).contains_key(proposer.clone());
+    let is_signer = _is_signer(env, &proposer);
     if data.admin != proposer && !is_signer {
         return Err(ContractError::Unauthorized);
     }
@@ -76,14 +78,14 @@ pub fn propose_emergency_revocation(
     }
 
     // The target must currently be a signer or the admin.
-    let target_is_signer = _get_signers(env).contains_key(target.clone());
+    let target_is_signer = _is_signer(env, &target);
     if data.admin != target && !target_is_signer {
         return Err(ContractError::TargetNotAdmin);
     }
 
-    let mut votes: Map<Address, ()> = Map::new(env);
+    let mut votes: Vec<Address> = Vec::new(env);
     // The proposer's opening of the proposal counts as their vote.
-    votes.set(proposer.clone(), ());
+    votes.push_back(proposer.clone());
 
     let proposal = EmergencyRevocationProposal {
         target,
@@ -133,7 +135,7 @@ pub fn vote_emergency_revocation(
         .ok_or(ContractError::NotInitialized)?;
 
     // Only the admin or a registered signer may vote.
-    let is_signer = _get_signers(env).contains_key(voter.clone());
+    let is_signer = _is_signer(env, &voter);
     if data.admin != voter && !is_signer {
         return Err(ContractError::Unauthorized);
     }
@@ -145,8 +147,10 @@ pub fn vote_emergency_revocation(
         .ok_or(ContractError::NoActiveEmergencyRevocation)?;
 
     // Prevent double-voting.
-    if proposal.votes.contains_key(voter.clone()) {
-        return Err(ContractError::AlreadyVoted);
+    for i in 0..proposal.votes.len() {
+        if proposal.votes.get(i).unwrap() == voter {
+            return Err(ContractError::AlreadyVoted);
+        }
     }
 
     // The compromised key must never be allowed to vote on its own revocation.
@@ -154,7 +158,7 @@ pub fn vote_emergency_revocation(
         return Err(ContractError::Unauthorized);
     }
 
-    proposal.votes.set(voter, ());
+    proposal.votes.push_back(voter);
 
     let threshold = _revocation_threshold(env);
 
@@ -164,26 +168,19 @@ pub fn vote_emergency_revocation(
         // 1. Stamp the target as revoked in persistent storage.
         //    This is the flag that `assert_not_revoked` checks before every
         //    sensitive operation.
-        let mut revoked: Map<Address, ()> = env
-            .storage()
-            .instance()
-            .get(&REVOKED_SIGNER_KEY)
-            .unwrap_or_else(|| Map::new(env));
-        revoked.set(proposal.target.clone(), ());
-        env.storage()
-            .instance()
-            .set(&REVOKED_SIGNER_KEY, &revoked);
+        let revoked_key = RevokedSignerKey(proposal.target.clone());
+        env.storage().instance().set(&revoked_key, &true);
 
         // 2. Remove the target from the active signer set.
-        let mut signers = _get_signers(env);
-        signers.remove(proposal.target.clone());
+        let signer_key = SignerKey(proposal.target.clone());
+        env.storage().instance().remove(&signer_key);
 
         // 3. Promote the replacement into the signer set (unless it is the
         //    target itself, which would be a no-op replacement).
         if proposal.replacement != proposal.target {
-            signers.set(proposal.replacement.clone(), ());
+            let replacement_key = SignerKey(proposal.replacement.clone());
+            env.storage().instance().set(&replacement_key, &true);
         }
-        env.storage().instance().set(&SIGNERS_KEY, &signers);
 
         // 4. If the compromised key was the admin, transfer admin rights.
         let mut contract_data = data;
@@ -220,12 +217,8 @@ pub fn get_emergency_revocation_proposal(
 /// This is intentionally a pure read — callers that need to *enforce* the
 /// check should call `assert_not_revoked` instead.
 pub fn is_revoked(env: &Env, addr: &Address) -> bool {
-    let revoked: Map<Address, ()> = env
-        .storage()
-        .instance()
-        .get(&REVOKED_SIGNER_KEY)
-        .unwrap_or_else(|| Map::new(env));
-    revoked.contains_key(addr.clone())
+    let revoked_key = RevokedSignerKey(addr.clone());
+    env.storage().instance().has(&revoked_key)
 }
 
 /// Enforcing guard — returns `RevokedAddress` if `addr` is in the revocation
@@ -318,4 +311,16 @@ pub fn set_paused(env: &Env, caller: Address, paused: bool) -> Result<(), Contra
 /// Returns true when the contract is in emergency-paused state.
 pub fn is_paused(env: &Env) -> bool {
     env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
+}
+
+/// Helper function to check if an address is a registered signer.
+fn _is_signer(env: &Env, addr: &Address) -> bool {
+    let signer_key = SignerKey(addr.clone());
+    env.storage().instance().has(&signer_key)
+}
+
+/// Helper function to calculate the revocation threshold.
+fn _revocation_threshold(env: &Env) -> u32 {
+    let signer_count: u32 = env.storage().instance().get(&SIGNERS_KEY).unwrap_or(0u32);
+    if signer_count == 0 { 1 } else { signer_count / 2 + 1 }
 }
