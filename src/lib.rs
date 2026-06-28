@@ -62,6 +62,8 @@ use crate::nonce::{consume_nonce, get_nonce};
 
 pub mod admin;
 pub mod auth;
+pub mod config;
+pub use config::{PriceVarianceConfig, get_price_variance_config, set_price_variance_config};
 pub mod consensus;
 pub mod governance;
 pub mod math;
@@ -123,9 +125,9 @@ pub enum ContractError {
     /// The proposed fee exceeds the maximum allowed ceiling.
     FeeCeilingExceeded = 27,
     /// Incoming tracking sequence is less than or equal to the active stored checkpoint value.
-    StaleSequence = 28,
-    /// Incoming telemetry payload is older than the accepted freshness window.
-    StaleTelemetryPayload = 33,
+    StaleSequence = 26,
+    /// A price-variance configuration field violated one or more struct invariants.
+    InvalidVarianceConfig = 28,
 }
 
 // Contract state keys
@@ -138,6 +140,7 @@ const HEARTBEAT_KEY: Symbol = symbol_short!("HBEAT");
 const HB_INTERVAL_KEY: Symbol = symbol_short!("HBINTV");
 pub(crate) const DEFAULT_HEARTBEAT_INTERVAL: u64 = 5 * 60;
 pub(crate) const SIGNERS_KEY: Symbol = symbol_short!("SIGNERS");
+pub(crate) const VALIDATOR_STATE_KEY: Symbol = symbol_short!("VLSTATE");
 const REVOCATION_KEY: Symbol = symbol_short!("REVOKE");
 // Emergency key revocation / blocking
 pub(crate) const REVOKED_SIGNER_KEY: Symbol = symbol_short!("REVOKED");
@@ -881,6 +884,30 @@ impl TimeLockedUpgradeContract {
 
     pub fn is_paused(env: Env) -> bool {
         admin::is_paused(&env)
+    }
+
+    // ── Price-Variance Configuration (Issue #420) ─────────────────────────
+
+    /// Replace the complete price-variance configuration in one atomic write.
+    ///
+    /// Accepts the **full** [`PriceVarianceConfig`] struct; individual field
+    /// mutations are intentionally not exposed so that all ledger storage slots
+    /// remain uniformly aligned after every update.
+    pub fn set_price_variance_config(
+        env: Env,
+        caller: Address,
+        cfg: PriceVarianceConfig,
+    ) -> Result<(), ContractError> {
+        config::set_price_variance_config(&env, &caller, cfg)?;
+        Self::_extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Return the active price-variance configuration.
+    ///
+    /// Falls back to compile-time defaults when no config has been written yet.
+    pub fn get_price_variance_config(env: Env) -> PriceVarianceConfig {
+        config::get_price_variance_config(&env)
     }
 
     // #432: pre-flight rent check hook
