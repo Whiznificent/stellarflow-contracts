@@ -2,8 +2,7 @@ use soroban_sdk::{symbol_short, Bytes, Env};
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo}; // Removed Symbol as _
 use crate::{
     ContractError, StakingTier, StakingTierConfig, TimeLockedUpgradeContract,
-    TimeLockedUpgradeContractClient, DEFAULT_HEARTBEAT_INTERVAL, 
-    AssetId,
+    TimeLockedUpgradeContractClient, DEFAULT_HEARTBEAT_INTERVAL,
 };
 
 /// Helper: advance the ledger timestamp by `delta` seconds.
@@ -193,7 +192,7 @@ fn test_heartbeat_fresh_data() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 3897123275; // NGN
+    let asset = symbol_short!("NGN");
 
     // Update heartbeat
     client.update_heartbeat(&asset, &admin);
@@ -218,7 +217,7 @@ fn test_heartbeat_stale_data() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 2654435761; // KES
+    let asset = symbol_short!("KES");
 
     // Update heartbeat at current time
     client.update_heartbeat(&asset, &admin);
@@ -242,7 +241,7 @@ fn test_heartbeat_never_updated() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 4026531840; // GHS
+    let asset = symbol_short!("GHS");
 
     // No heartbeat recorded → should be stale
     assert!(!client.is_data_fresh(&asset));
@@ -260,7 +259,7 @@ fn test_heartbeat_custom_interval() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 4160749568; // CFA
+    let asset = symbol_short!("CFA");
 
     // Verify default interval
     assert_eq!(client.get_heartbeat_interval(), DEFAULT_HEARTBEAT_INTERVAL);
@@ -296,7 +295,7 @@ fn test_heartbeat_unauthorized_update() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 3897123275; // NGN
+    let asset = symbol_short!("NGN");
 
     // Non-admin tries to update heartbeat — should panic
     let args = soroban_sdk::vec![&env, asset.into_val(&env), unauthorized.into_val(&env)];
@@ -416,7 +415,7 @@ fn test_is_data_fresh_does_not_mutate_state() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 3897123275; // NGN
+    let asset = symbol_short!("NGN");
 
     // Calling is_data_fresh multiple times on the same slot must not alter state
     assert!(!client.is_data_fresh(&asset));
@@ -435,7 +434,7 @@ fn test_query_methods_do_not_affect_each_other() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 2654435761; // KES
+    let asset = symbol_short!("KES");
 
     // get_data reads contract state; is_data_fresh reads heartbeat storage.
     // Neither should influence the other's result.
@@ -470,7 +469,7 @@ fn test_is_data_fresh_returns_false_for_unknown_asset() {
     client.initialize(&admin, &treasury);
 
     // Any asset that was never written should return false
-    let asset: AssetId = 4026531840; // GHS
+    let asset = symbol_short!("GHS");
     assert!(!client.is_data_fresh(&asset));
 }
 
@@ -510,7 +509,7 @@ fn test_stake_updates_heartbeat() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let stake_asset: AssetId = 0; // STAKE
+    let stake_asset = symbol_short!("STAKE");
     assert!(!client.is_data_fresh(&stake_asset));
 
     client.stake_and_register(&node, &500u64);
@@ -593,8 +592,8 @@ fn test_regional_feed_allows_lower_stake_than_premier_feed() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let regional: AssetId = 2654435761; // KES
-    let premier: AssetId = 3897123275; // NGN
+    let regional = symbol_short!("KES");
+    let premier = symbol_short!("NGN");
 
     let signers = soroban_sdk::vec![&env, admin.clone(), admin.clone()];
     client.set_asset_feed_metrics(&admin, &regional, &10, &100, &signers);
@@ -630,7 +629,7 @@ fn test_corridor_volume_bumps_tier_requirements() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 4026531840; // GHS
+    let asset = symbol_short!("GHS");
     client.set_asset_feed_metrics(&admin, &asset, &10, &200, &soroban_sdk::vec![&env, admin.clone()]);
 
     assert_eq!(client.get_staking_tier(&asset), StakingTier::Regional);
@@ -664,7 +663,7 @@ fn test_custom_tier_config_is_enforced() {
         &signers,
     );
 
-    let asset: AssetId = 3219226362; // ZAR
+    let asset = symbol_short!("ZAR");
     client.set_asset_feed_metrics(&admin, &asset, &10, &100, &signers);
 
     assert_eq!(client.get_required_stake(&asset), 250u64);
@@ -688,7 +687,7 @@ fn test_unstake_from_feed_updates_totals() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let asset: AssetId = 2863311530; // UGX
+    let asset = symbol_short!("UGX");
     client.set_asset_feed_metrics(&admin, &asset, &10, &100, &soroban_sdk::vec![&env, admin.clone()]);
     client.stake_and_register_for_feed(&node, &asset, &100u64);
 
@@ -709,7 +708,7 @@ fn test_set_value_updates_heartbeat() {
     let treasury = soroban_sdk::Address::generate(&env);
     client.initialize(&admin, &treasury);
 
-    let value_asset: AssetId = 1; // VALUE
+    let value_asset = symbol_short!("VALUE");
 
     // Before set_value, no heartbeat exists for "VALUE"
     assert!(!client.is_data_fresh(&value_asset));
@@ -884,7 +883,7 @@ fn test_update_validator_profile_succeeds_above_min_stake() {
     let pool = symbol_short!("XLM");
     client.update_validator_profile(&node, &pool);
     // Heartbeat for the pool asset should now be fresh.
-    assert!(client.is_data_fresh(&crate::symbol_to_asset_id(&pool)));
+    assert!(client.is_data_fresh(&pool));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

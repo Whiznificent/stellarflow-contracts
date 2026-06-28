@@ -5,53 +5,6 @@ use soroban_sdk::{
     Map, Symbol, Vec,
 };
 
-/// Numeric asset identifier for gas-optimized storage.
-/// Replaces heavy Symbol identifiers in high-frequency paths.
-pub type AssetId = u32;
-
-/// Convert a currency Symbol to a numeric AssetId using FNV-1a hash.
-/// This provides deterministic mapping while minimizing gas costs.
-pub fn symbol_to_asset_id(symbol: &Symbol) -> AssetId {
-    // Simple FNV-1a hash for deterministic conversion
-    let mut hash: u32 = 2166136261u32;
-    // A Symbol is internally a u64, so we can hash its bytes directly
-    // without string allocation.
-    // Convert the symbol to a string, then iterate over its bytes for hashing.
-    // Extract the raw characters from the symbol natively without allocations
-    for character in (*symbol).into_iter() {
-        let byte = character as u8;
-        if byte == 0 { break; } // Symbols are null-padded if shorter than maximum length
-        
-        hash ^= byte as u32; // XOR the byte into the hash
-        hash = hash.wrapping_mul(16777619); // Multiply by FNV prime
-    }
-    hash
-}
-
-/// Convert an AssetId back to a Symbol for backward compatibility.
-/// Note: This is lossy - use pre-defined mappings for production.
-    pub fn asset_id_to_symbol(_env: &Env, id: AssetId) -> Symbol {
-    // For common currencies, use a mapping table
-    match id {
-        // Nigerian Naira
-        3897123275 => symbol_short!("NGN"),
-        // Kenyan Shilling
-        2654435761 => symbol_short!("KES"),
-        // Ghanaian Cedi
-        4026531840 => symbol_short!("GHS"),
-        // West African CFA Franc
-        4160749568 => symbol_short!("CFA"),
-        // South African Rand
-        3219226362 => symbol_short!("ZAR"),
-        // Ugandan Shilling
-        2863311530 => symbol_short!("UGX"),
-        // Special asset identifiers
-        0 => symbol_short!("STAKE"),
-        1 => symbol_short!("VALUE"),
-        _ => symbol_short!("UNK"),
-    }
-}
-
 pub(crate) mod nonce;
 use crate::nonce::{consume_nonce, get_nonce};
 
@@ -227,7 +180,7 @@ impl TimeLockedUpgradeContract {
         stakes.set(node.clone(), amount);
         env.storage().instance().set(&STAKE_REGISTRY_KEY, &stakes);
         env.storage().instance().set(&TOTAL_STAKED_KEY, &new_total);
-        Self::_record_heartbeat(&env, symbol_to_asset_id(&symbol_short!("STAKE")));
+        Self::_record_heartbeat(&env, symbol_short!("STAKE"));
         Ok(StakeRecord { node, amount, registered_at: env.ledger().timestamp() })
     }
 
@@ -350,7 +303,7 @@ impl TimeLockedUpgradeContract {
         env.storage().instance().set(&SEQUENCE_COUNTER_KEY, &seq_map);
         data.value = new_value;
         env.storage().instance().set(&DATA_KEY, &data); // This line was missing a semicolon
-        Self::_record_heartbeat(&env, symbol_to_asset_id(&symbol_short!("VALUE")));
+        Self::_record_heartbeat(&env, symbol_short!("VALUE"));
         Ok(())
     }
 
@@ -394,11 +347,11 @@ impl TimeLockedUpgradeContract {
     ) -> Result<(), ContractError> {
         node.require_auth();
         check_bond_capacity(&env, &node, &pool)?;
-        Self::_record_heartbeat(&env, symbol_to_asset_id(&pool));
+        Self::_record_heartbeat(&env, pool);
         Ok(())
     }
 
-    pub fn update_heartbeat(env: Env, asset: AssetId, updater: Address) -> Result<(), ContractError> {
+    pub fn update_heartbeat(env: Env, asset: Symbol, updater: Address) -> Result<(), ContractError> {
         let data = Self::get_data(env.clone())?;
         if data.admin != updater { return Err(ContractError::NotAdmin); }
         updater.require_auth();
@@ -407,8 +360,8 @@ impl TimeLockedUpgradeContract {
         Ok(())
     }
 
-    pub fn is_data_fresh(env: Env, asset: AssetId) -> bool {
-        let timestamps: Map<AssetId, u64> = env
+    pub fn is_data_fresh(env: Env, asset: Symbol) -> bool {
+        let timestamps: Map<Symbol, u64> = env
             .storage()
             .temporary()
             .get(&HEARTBEAT_KEY)
@@ -763,8 +716,8 @@ impl TimeLockedUpgradeContract {
         Ok(())
     }
 
-    fn _record_heartbeat(env: &Env, asset: AssetId) {
-        let mut timestamps: Map<AssetId, u64> = env.storage().temporary().get(&HEARTBEAT_KEY).unwrap_or_else(|| Map::new(&env));
+    fn _record_heartbeat(env: &Env, asset: Symbol) {
+        let mut timestamps: Map<Symbol, u64> = env.storage().temporary().get(&HEARTBEAT_KEY).unwrap_or_else(|| Map::new(&env));
         timestamps.set(asset, env.ledger().timestamp());
         env.storage().temporary().set(&HEARTBEAT_KEY, &timestamps);
     }
@@ -809,7 +762,7 @@ impl TimeLockedUpgradeContract {
         if n == 0 { 1 } else { n / 2 + 1 }
     }
 
-    fn _resolve_feed_metrics(env: &Env, asset: &AssetId) -> AssetFeedMetrics {
+    fn _resolve_feed_metrics(env: &Env, asset: &Symbol) -> AssetFeedMetrics {
         let pool = Self::get_corridor_fee_pool(env.clone(), asset.clone());
         let stored: AssetFeedMetrics = env
             .storage()
