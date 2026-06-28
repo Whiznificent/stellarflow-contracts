@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 3,
     "nonce": 0
   },
   "auth": [
@@ -15,6 +15,9 @@
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 }
               ]
             }
@@ -36,13 +39,20 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 },
                 {
                   "u32": 10
                 },
                 {
                   "u32": 200
+                },
+                {
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    }
+                  ]
                 }
               ]
             }
@@ -76,7 +86,7 @@
                   "symbol": "Asset"
                 },
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 }
               ]
             },
@@ -96,7 +106,7 @@
                       "symbol": "Asset"
                     },
                     {
-                      "symbol": "GHS"
+                      "u32": 4026531840
                     }
                   ]
                 },
@@ -108,7 +118,7 @@
                         "symbol": "asset"
                       },
                       "val": {
-                        "symbol": "GHS"
+                        "u32": 4026531840
                       }
                     },
                     {
@@ -146,7 +156,7 @@
                   "symbol": "AssetMetrics"
                 },
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 }
               ]
             },
@@ -166,7 +176,7 @@
                       "symbol": "AssetMetrics"
                     },
                     {
-                      "symbol": "GHS"
+                      "u32": 4026531840
                     }
                   ]
                 },
@@ -245,6 +255,14 @@
                             }
                           ]
                         }
+                      },
+                      {
+                        "key": {
+                          "symbol": "TREASURY"
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                        }
                       }
                     ]
                   }
@@ -253,7 +271,7 @@
             },
             "ext": "v0"
           },
-          4095
+          105000
         ]
       ],
       [
@@ -340,7 +358,7 @@
             },
             "ext": "v0"
           },
-          4095
+          105000
         ]
       ]
     ]
@@ -365,7 +383,14 @@
               }
             ],
             "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                }
+              ]
             }
           }
         }
@@ -417,13 +442,20 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 },
                 {
                   "u32": 10
                 },
                 {
                   "u32": 200
+                },
+                {
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    }
+                  ]
                 }
               ]
             }
@@ -491,7 +523,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }
@@ -542,7 +574,7 @@
             "data": {
               "vec": [
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 },
                 {
                   "u64": 2000000000
@@ -579,7 +611,7 @@
                     "symbol": "asset"
                   },
                   "val": {
-                    "symbol": "GHS"
+                    "u32": 4026531840
                   }
                 },
                 {
@@ -624,7 +656,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }
@@ -673,7 +705,7 @@
               }
             ],
             "data": {
-              "symbol": "GHS"
+              "u32": 4026531840
             }
           }
         }
