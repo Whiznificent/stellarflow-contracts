@@ -31,6 +31,21 @@ pub enum DataKey {
     SubmissionDelegate(Address),
     /// Maps a delegate address back to the admin who authorized it.
     DelegateOf(Address),
+
+    // ── Circuit-Breaker ───────────────────────────────────────────────────────
+    /// Registered coordinator nodes that may trigger the circuit-breaker.
+    /// Value: Vec<Address>.
+    CircuitBreakerCoordinators,
+    /// Global circuit-breaker flag.  When true, every price query for a
+    /// high-volatility asset is dropped immediately.
+    CircuitBreakerActive,
+    /// Ledger timestamp at which the circuit-breaker was last tripped.
+    CircuitBreakerTrippedAt,
+    /// Address of the coordinator that last tripped the circuit-breaker.
+    CircuitBreakerTrippedBy,
+    /// Per-asset circuit-breaker override flag (Symbol → bool).
+    /// When true the asset is individually paused regardless of the global flag.
+    CircuitBreakerPairedAsset(soroban_sdk::Symbol),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
