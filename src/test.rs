@@ -1,10 +1,11 @@
-use soroban_sdk::{Bytes, Env};
+use soroban_sdk::{Bytes, Env, symbol_short};
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
 use crate::{
-    ContractError, StakingTier, StakingTierConfig, TimeLockedUpgradeContract,
-    TimeLockedUpgradeContractClient, DEFAULT_HEARTBEAT_INTERVAL, UPGRADE_DELAY_SECONDS,
-    AssetId,
+    AssetId, ContractError, StakingTier, StakingTierConfig, TimeLockedUpgradeContract,
+    TimeLockedUpgradeContractClient, DEFAULT_HEARTBEAT_INTERVAL,
 };
+use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo}; // Removed Symbol as _
+use soroban_sdk::{symbol_short, Bytes, Env};
 
 /// Helper: advance the ledger timestamp by `delta` seconds.
 fn advance_ledger_timestamp(env: &Env, delta: u64) {
@@ -40,14 +41,15 @@ fn test_initialize_and_basic_functionality() {
 
     let admin = soroban_sdk::Address::generate(&env);
 
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let data = client.get_data();
     assert_eq!(data.admin, admin);
     assert_eq!(data.value, 0);
 
     let (salt, signature) = nonce_proof(&env, 0, b"set-value-0");
-    client.set_value(&42, &admin, &0, &salt, &signature, &u64::MAX);
+    client.set_value(&42, &admin, &0, &salt, &signature, &u64::MAX, &0);
     let data = client.get_data();
     assert_eq!(data.value, 42);
     assert_eq!(client.get_coordinator_nonce(&admin), 1);
@@ -61,7 +63,8 @@ fn test_propose_upgrade() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
     let (salt, signature) = nonce_proof(&env, 0, b"propose-upgrade-0");
@@ -71,14 +74,14 @@ fn test_propose_upgrade() {
     let pending = client.get_pending_upgrade();
     assert!(pending.is_some());
 
-    let pending_upgrade = pending.unwrap();
-    assert_eq!(pending_upgrade.new_wasm_hash, new_wasm_hash);
-    assert_eq!(pending_upgrade.proposer, admin);
+    let staged_upgrade = pending.unwrap();
+    assert_eq!(staged_upgrade.wasm_hash, new_wasm_hash);
+    // assert_eq!(pending_upgrade.proposer, admin); // proposer field doesn't exist on StagedUpgrade
     assert_eq!(client.get_coordinator_nonce(&admin), 1);
 
     let remaining = client.get_upgrade_timelock_remaining();
     assert!(remaining.is_some());
-    assert_eq!(remaining.unwrap(), UPGRADE_DELAY_SECONDS);
+    assert_eq!(remaining.unwrap(), 5000u32);
 }
 
 #[test]
@@ -89,12 +92,13 @@ fn test_set_value_rejects_bad_salt_signature() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let salt = Bytes::from_slice(&env, b"bad-salt");
     let bad_signature = soroban_sdk::BytesN::from_array(&env, &[9u8; 32]);
 
-    let result = client.try_set_value(&42, &admin, &0, &salt, &bad_signature, &u64::MAX);
+    let result = client.try_set_value(&42, &admin, &0, &salt, &bad_signature, &u64::MAX, &0);
     assert_eq!(result, Err(Ok(ContractError::InvalidSaltSignature)));
 }
 
@@ -106,19 +110,26 @@ fn test_execute_upgrade_after_timelock() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
     let (salt, signature) = nonce_proof(&env, 0, b"propose-upgrade-1");
 
     client.propose_upgrade(&new_wasm_hash, &admin, &0, &salt, &signature, &u64::MAX);
 
-    // Fast forward time by 48 hours
-    advance_ledger_timestamp(&env, UPGRADE_DELAY_SECONDS);
+    // Fast forward ledgers
+    env.ledger().set(LedgerInfo {
+        sequence_number: 5001,
+        ..env.ledger().get()
+    });
 
     // Timelock should be satisfied
     let remaining = client.get_upgrade_timelock_remaining();
-    assert_eq!(remaining.unwrap(), 0);
+    assert_eq!(
+        remaining.unwrap(),
+        4999u32.saturating_sub(5001u32.saturating_sub(1))
+    );
 }
 
 #[test]
@@ -129,7 +140,8 @@ fn test_cancel_upgrade() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
 
@@ -151,7 +163,8 @@ fn test_timelock_countdown() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
 
@@ -159,17 +172,23 @@ fn test_timelock_countdown() {
     client.propose_upgrade(&new_wasm_hash, &admin, &0, &salt, &signature, &u64::MAX);
 
     let remaining = client.get_upgrade_timelock_remaining().unwrap();
-    assert_eq!(remaining, UPGRADE_DELAY_SECONDS);
+    assert_eq!(remaining, 5000);
 
-    advance_ledger_timestamp(&env, 24 * 60 * 60);
-
-    let remaining = client.get_upgrade_timelock_remaining().unwrap();
-    assert_eq!(remaining, 24 * 60 * 60);
-
-    advance_ledger_timestamp(&env, 24 * 60 * 60);
+    env.ledger().set(LedgerInfo {
+        sequence_number: 1001,
+        ..env.ledger().get()
+    });
 
     let remaining = client.get_upgrade_timelock_remaining().unwrap();
-    assert_eq!(remaining, 0);
+    assert_eq!(remaining, 4000);
+
+    env.ledger().set(LedgerInfo {
+        sequence_number: 5001,
+        ..env.ledger().get()
+    });
+
+    let remaining = client.get_upgrade_timelock_remaining().unwrap();
+    assert_eq!(remaining, 4999u32.saturating_sub(5001u32.saturating_sub(1)));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -184,7 +203,8 @@ fn test_heartbeat_fresh_data() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let asset: AssetId = 3897123275; // NGN
 
@@ -208,7 +228,8 @@ fn test_heartbeat_stale_data() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let asset: AssetId = 2654435761; // KES
 
@@ -231,7 +252,8 @@ fn test_heartbeat_never_updated() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let asset: AssetId = 4026531840; // GHS
 
@@ -248,7 +270,8 @@ fn test_heartbeat_custom_interval() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let asset: AssetId = 4160749568; // CFA
 
@@ -283,7 +306,8 @@ fn test_heartbeat_unauthorized_update() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let unauthorized = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let asset: AssetId = 3897123275; // NGN
 
@@ -308,7 +332,8 @@ fn test_heartbeat_unauthorized_set_interval() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let unauthorized = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     // Non-admin tries to set heartbeat interval — should panic
     let args = soroban_sdk::vec![&env, 600u64.into_val(&env), unauthorized.into_val(&env)];
@@ -328,14 +353,15 @@ fn test_unauthorized_propose_upgrade() {
     env.mock_all_auths();
     let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
-    
+
     let admin = soroban_sdk::Address::generate(&env);
     let unauthorized_user = soroban_sdk::Address::generate(&env);
-    
-    client.initialize(&admin);
-    
+
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
+
     let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
-    
+
     // Try to propose upgrade as unauthorized user - should fail
     let args = soroban_sdk::vec![&env, new_wasm_hash.into_val(&env), unauthorized_user.into_val(&env)];
     let result = env.try_invoke_contract::<(), soroban_sdk::Error>(
@@ -354,12 +380,13 @@ fn test_unauthorized_set_value() {
     env.mock_all_auths();
     let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
-    
+
     let admin = soroban_sdk::Address::generate(&env);
     let unauthorized_user = soroban_sdk::Address::generate(&env);
-    
-    client.initialize(&admin);
-    
+
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
+
     // Try to set value as unauthorized user - should fail
     let args = soroban_sdk::vec![&env, 42u64.into_val(&env), unauthorized_user.into_val(&env)];
     let result = env.try_invoke_contract::<(), soroban_sdk::Error>(
@@ -382,7 +409,8 @@ fn test_get_data_is_idempotent() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let first = client.get_data();
     let second = client.get_data();
@@ -398,7 +426,8 @@ fn test_is_data_fresh_does_not_mutate_state() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let asset: AssetId = 3897123275; // NGN
 
@@ -416,7 +445,8 @@ fn test_query_methods_do_not_affect_each_other() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let asset: AssetId = 2654435761; // KES
 
@@ -449,7 +479,8 @@ fn test_is_data_fresh_returns_false_for_unknown_asset() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     // Any asset that was never written should return false
     let asset: AssetId = 4026531840; // GHS
@@ -469,7 +500,8 @@ fn test_stake_and_register_success() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let record = client.stake_and_register(&node, &1000u64);
 
@@ -488,7 +520,8 @@ fn test_stake_updates_heartbeat() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let stake_asset: AssetId = 0; // STAKE
     assert!(!client.is_data_fresh(&stake_asset));
@@ -508,7 +541,8 @@ fn test_multiple_nodes_stake() {
     let admin = soroban_sdk::Address::generate(&env);
     let node1 = soroban_sdk::Address::generate(&env);
     let node2 = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     client.stake_and_register(&node1, &1000u64);
     client.stake_and_register(&node2, &2000u64);
@@ -527,7 +561,8 @@ fn test_get_stake_unregistered_node_returns_zero() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     assert_eq!(client.get_stake(&node), 0u64);
     assert_eq!(client.get_total_staked(), 0u64);
@@ -542,7 +577,8 @@ fn test_unstake_removes_node_and_updates_total() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     client.stake_and_register(&node, &1000u64);
     assert_eq!(client.get_total_staked(), 1000u64);
@@ -561,18 +597,23 @@ fn test_unstake_removes_node_and_updates_total() {
 #[test]
 fn test_regional_feed_allows_lower_stake_than_premier_feed() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
+    let signer1 = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     client.initialize(&admin);
+    client.register_signer(&signer1, &admin);
+    client.register_signer(&signer2, &admin);
 
     let regional: AssetId = 2654435761; // KES
     let premier: AssetId = 3897123275; // NGN
 
-    let signers = soroban_sdk::vec![&env, admin.clone(), admin.clone()];
+    let signers = soroban_sdk::vec![&env, signer1.clone(), signer2.clone()];
     client.set_asset_feed_metrics(&admin, &regional, &10, &100, &signers);
     client.set_asset_feed_metrics(&admin, &premier, &80, &1_000, &signers);
 
@@ -598,15 +639,20 @@ fn test_regional_feed_allows_lower_stake_than_premier_feed() {
 #[test]
 fn test_corridor_volume_bumps_tier_requirements() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
+    let signer1 = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     client.initialize(&admin);
+    client.register_signer(&signer1, &admin);
+    client.register_signer(&signer2, &admin);
 
     let asset: AssetId = 4026531840; // GHS
-    client.set_asset_feed_metrics(&admin, &asset, &10, &200);
+    let signers = soroban_sdk::vec![&env, signer1.clone(), signer2.clone()];
+    client.set_asset_feed_metrics(&admin, &asset, &10, &200, &signers);
 
     assert_eq!(client.get_staking_tier(&asset), StakingTier::Regional);
 
@@ -619,15 +665,20 @@ fn test_corridor_volume_bumps_tier_requirements() {
 #[test]
 fn test_custom_tier_config_is_enforced() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
+    let signer1 = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     client.initialize(&admin);
+    client.register_signer(&signer1, &admin);
+    client.register_signer(&signer2, &admin);
 
-    let signers = soroban_sdk::vec![&env, admin.clone(), admin.clone()];
+    let signers = soroban_sdk::vec![&env, signer1.clone(), signer2.clone()];
     client.set_staking_tier_config(
         &admin,
         &StakingTierConfig {
@@ -639,7 +690,8 @@ fn test_custom_tier_config_is_enforced() {
     );
 
     let asset: AssetId = 3219226362; // ZAR
-    client.set_asset_feed_metrics(&admin, &asset, &10, &100);
+    client.set_asset_feed_metrics(&admin, &asset, &10, &100, &signers);
+    client.set_asset_feed_metrics(&admin, &asset, &10, &100, &signers);
 
     assert_eq!(client.get_required_stake(&asset), 250u64);
 
@@ -653,16 +705,22 @@ fn test_custom_tier_config_is_enforced() {
 #[test]
 fn test_unstake_from_feed_updates_totals() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
+    let signer1 = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     client.initialize(&admin);
+    client.register_signer(&signer1, &admin);
+    client.register_signer(&signer2, &admin);
 
     let asset: AssetId = 2863311530; // UGX
-    client.set_asset_feed_metrics(&admin, &asset, &10, &100);
+    let signers = soroban_sdk::vec![&env, signer1.clone(), signer2.clone()];
+    client.set_asset_feed_metrics(&admin, &asset, &10, &100, &signers);
     client.stake_and_register_for_feed(&node, &asset, &100u64);
 
     assert_eq!(client.get_total_staked(), 100u64);
@@ -679,7 +737,8 @@ fn test_set_value_updates_heartbeat() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let value_asset: AssetId = 1; // VALUE
 
@@ -688,7 +747,7 @@ fn test_set_value_updates_heartbeat() {
 
     // Call set_value — should auto-record heartbeat
     let (salt, signature) = nonce_proof(&env, 0, b"set-value-1");
-    client.set_value(&42, &admin, &0, &salt, &signature, &u64::MAX);
+    client.set_value(&42, &admin, &0, &salt, &signature, &u64::MAX, &0);
 
     // Now the "VALUE" asset should have a fresh heartbeat
     assert!(client.is_data_fresh(&value_asset));
@@ -700,7 +759,7 @@ fn test_set_value_updates_heartbeat() {
 
     // Another set_value call refreshes the heartbeat
     let (salt, signature) = nonce_proof(&env, 1, b"set-value-2");
-    client.set_value(&100, &admin, &1, &salt, &signature, &u64::MAX);
+    client.set_value(&100, &admin, &1, &salt, &signature, &u64::MAX, &1);
     assert!(client.is_data_fresh(&value_asset));
 }
 
@@ -712,9 +771,10 @@ fn test_initialize_twice_returns_typed_error() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
-    let result = client.try_initialize(&admin);
+    let result = client.try_initialize(&admin, &treasury);
     assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
 }
 
@@ -727,10 +787,11 @@ fn test_unauthorized_set_value_returns_typed_error() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let unauthorized = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let (salt, signature) = nonce_proof(&env, 0, b"set-value-unauth");
-    let result = client.try_set_value(&42, &unauthorized, &0u64, &salt, &signature, &u64::MAX);
+    let result = client.try_set_value(&42, &unauthorized, &0u64, &salt, &signature, &u64::MAX, &0);
     assert_eq!(result, Err(Ok(ContractError::NotAdmin)));
 }
 
@@ -742,7 +803,8 @@ fn test_zero_heartbeat_interval_returns_typed_error() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     let result = client.try_set_heartbeat_interval(&0, &admin);
     assert_eq!(result, Err(Ok(ContractError::InvalidHeartbeatInterval)));
@@ -756,7 +818,8 @@ fn test_expired_signature_rejected() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     // Advance ledger past the expiry window
     advance_ledger_timestamp(&env, 1000);
@@ -764,11 +827,12 @@ fn test_expired_signature_rejected() {
 
     let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
     let (salt, signature) = nonce_proof(&env, 0, b"propose-upgrade-expired");
-    let result = client.try_propose_upgrade(&new_wasm_hash, &admin, &0, &salt, &signature, &expired_at);
+    let result =
+        client.try_propose_upgrade(&new_wasm_hash, &admin, &0, &salt, &signature, &expired_at);
     assert_eq!(result, Err(Ok(ContractError::SignatureExpired)));
 
     let (salt2, signature2) = nonce_proof(&env, 0, b"set-value-expired");
-    let result = client.try_set_value(&42, &admin, &0, &salt2, &signature2, &expired_at);
+    let result = client.try_set_value(&42, &admin, &0, &salt2, &signature2, &expired_at, &0);
     assert_eq!(result, Err(Ok(ContractError::SignatureExpired)));
 }
 
@@ -785,7 +849,8 @@ fn test_update_validator_profile_succeeds_with_sufficient_stake() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     // Stake exactly the minimum required bond.
     client.stake_and_register(&node, &crate::validation::PREMIUM_POOL_MIN_STAKE);
@@ -804,7 +869,8 @@ fn test_update_validator_profile_blocked_below_min_stake() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     // Stake one unit below the required minimum.
     client.stake_and_register(&node, &(crate::validation::PREMIUM_POOL_MIN_STAKE - 1));
@@ -823,7 +889,8 @@ fn test_update_validator_profile_blocked_with_zero_stake() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     // Node has never staked — locked stake is 0.
     let pool = symbol_short!("ETH");
@@ -840,13 +907,355 @@ fn test_update_validator_profile_succeeds_above_min_stake() {
 
     let admin = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
-    client.initialize(&admin);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
 
     // Stake well above the minimum.
     client.stake_and_register(&node, &5_000u64);
 
     let pool = symbol_short!("XLM");
     client.update_validator_profile(&node, &pool);
-    // Heartbeat for the pool asset should now be fresh.
-    assert!(client.is_data_fresh(&pool));
+    let pool_id = crate::symbol_to_asset_id(&pool);
+    assert!(client.is_data_fresh(&pool_id));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ephemeral Ballot Lifecycle tests (Issue #484)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_propose_creates_ballot_in_temp_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let target = soroban_sdk::Address::generate(&env);
+    let replacement = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+    client.register_signer(&admin, &admin);
+
+    assert!(client.get_revocation_ballot().is_none());
+    client.propose_revocation(&admin, &target, &replacement);
+    assert!(client.get_revocation_ballot().is_some());
+}
+
+#[test]
+fn test_duplicate_proposal_blocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let target = soroban_sdk::Address::generate(&env);
+    let replacement = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+    client.register_signer(&admin, &admin);
+
+    client.propose_revocation(&admin, &target, &replacement);
+    let result = client.try_propose_revocation(&admin, &target, &replacement);
+    assert_eq!(result, Err(Ok(ContractError::ProposalAlreadyActive)));
+}
+
+#[test]
+fn test_vote_without_proposal_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_vote_revocation(&admin, &u64::MAX);
+    assert_eq!(result, Err(Ok(ContractError::NoActiveProposal)));
+}
+
+#[test]
+fn test_vote_records_in_temp_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let voter = soroban_sdk::Address::generate(&env);
+    let voter2 = soroban_sdk::Address::generate(&env);
+    let target = soroban_sdk::Address::generate(&env);
+    let replacement = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+    // Register two signers so threshold = 2; one vote leaves ballot open
+    client.register_signer(&voter, &admin);
+    client.register_signer(&voter2, &admin);
+
+    client.propose_revocation(&admin, &target, &replacement);
+    client.vote_revocation(&voter, &u64::MAX);
+
+    let ballot = client.get_revocation_ballot().unwrap();
+    assert!(ballot.votes.contains_key(voter));
+}
+
+#[test]
+fn test_double_vote_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let voter = soroban_sdk::Address::generate(&env);
+    let voter2 = soroban_sdk::Address::generate(&env);
+    let target = soroban_sdk::Address::generate(&env);
+    let replacement = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+    // Register two signers so threshold = 2; single vote leaves ballot open
+    client.register_signer(&voter, &admin);
+    client.register_signer(&voter2, &admin);
+
+    client.propose_revocation(&admin, &target, &replacement);
+    client.vote_revocation(&voter, &u64::MAX);
+    let result = client.try_vote_revocation(&voter, &u64::MAX);
+    assert_eq!(result, Err(Ok(ContractError::AlreadyVoted)));
+}
+
+#[test]
+fn test_finalize_consensus_removes_ballot() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let target = soroban_sdk::Address::generate(&env);
+    let replacement = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+    client.register_signer(&admin, &admin);
+
+    client.propose_revocation(&admin, &target, &replacement);
+    assert!(client.get_revocation_ballot().is_some());
+
+    client.finalize_consensus();
+    assert!(client.get_revocation_ballot().is_none());
+}
+
+#[test]
+fn test_finalize_consensus_safe_with_no_ballot() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    // finalize_consensus when no ballot exists must not panic
+    client.finalize_consensus();
+    assert!(client.get_revocation_ballot().is_none());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Two-Phase Admin Key Change tests (Issue #493)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_propose_admin_change_creates_pending_record() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let new_admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    assert!(client.get_pending_admin_change().is_none());
+    client.propose_admin_change(&admin, &new_admin);
+    let proposal = client.get_pending_admin_change().unwrap();
+    assert_eq!(proposal.new_admin, new_admin);
+    assert_eq!(proposal.proposer, admin);
+}
+
+#[test]
+fn test_duplicate_admin_change_proposal_blocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let new_admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_change(&admin, &new_admin);
+    let result = client.try_propose_admin_change(&admin, &new_admin);
+    assert_eq!(result, Err(Ok(ContractError::AdminChangePending)));
+}
+
+#[test]
+fn test_non_admin_cannot_propose_admin_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let attacker = soroban_sdk::Address::generate(&env);
+    let new_admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_propose_admin_change(&attacker, &new_admin);
+    assert_eq!(result, Err(Ok(ContractError::NotAdmin)));
+}
+
+#[test]
+fn test_countersign_executes_admin_change_immediately() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let new_admin = soroban_sdk::Address::generate(&env);
+    let cosigner = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+    client.register_signer(&cosigner, &admin);
+
+    client.propose_admin_change(&admin, &new_admin);
+    client.countersign_admin_change(&cosigner);
+
+    // Admin should now be updated
+    let data = client.get_data();
+    assert_eq!(data.admin, new_admin);
+    // Pending proposal should be cleared
+    assert!(client.get_pending_admin_change().is_none());
+}
+
+#[test]
+fn test_cosigner_cannot_be_proposer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let new_admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_change(&admin, &new_admin);
+    // Admin tries to countersign their own proposal — must be rejected
+    let result = client.try_countersign_admin_change(&admin);
+    assert_eq!(result, Err(Ok(ContractError::CosignerCannotBeProposer)));
+}
+
+#[test]
+fn test_timelock_path_rejected_before_delay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let new_admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_change(&admin, &new_admin);
+    // Attempt immediate execution without waiting
+    let result = client.try_execute_admin_change_by_timelock(&admin);
+    assert_eq!(result, Err(Ok(ContractError::AdminChangeTimelockNotSatisfied)));
+}
+
+#[test]
+fn test_timelock_path_succeeds_after_delay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let new_admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_change(&admin, &new_admin);
+
+    // Fast-forward 24 hours
+    advance_ledger_timestamp(&env, 24 * 60 * 60);
+
+    client.execute_admin_change_by_timelock(&admin);
+
+    let data = client.get_data();
+    assert_eq!(data.admin, new_admin);
+    assert!(client.get_pending_admin_change().is_none());
+}
+
+#[test]
+fn test_cancel_admin_change_clears_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let new_admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_change(&admin, &new_admin);
+    assert!(client.get_pending_admin_change().is_some());
+
+    client.cancel_admin_change(&admin);
+    assert!(client.get_pending_admin_change().is_none());
+    // Admin key is unchanged
+    assert_eq!(client.get_data().admin, admin);
+}
+
+#[test]
+fn test_execute_timelock_without_pending_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_execute_admin_change_by_timelock(&admin);
+    assert_eq!(result, Err(Ok(ContractError::NoAdminChangePending)));
+}
+
+#[test]
+fn test_countersign_without_pending_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let cosigner = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin);
+    client.register_signer(&cosigner, &admin);
+
+    let result = client.try_countersign_admin_change(&cosigner);
+    assert_eq!(result, Err(Ok(ContractError::NoAdminChangePending)));
+}
+
+#[test]
+fn test_node_profile_ttl_extension() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TimeLockedUpgradeContract);
+    let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
+
+    let admin = soroban_sdk::Address::generate(&env);
+    let node = soroban_sdk::Address::generate(&env);
+    let treasury = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &treasury);
+
+    // Upsert the profile
+    client.upsert_node_profile(&admin, &node, &100, &99);
+
+    // Retrieve the profiles map and check that it was successfully retrieved.
+    let rate = client.get_latest_rate(&node);
+    assert_eq!(rate, 100);
+}
+

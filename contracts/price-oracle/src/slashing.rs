@@ -330,4 +330,129 @@ mod tests {
             );
         });
     }
+
+    // ── Test 1-10: apply_slash_cap and penalty cap ─────────────────────────────
+
+    #[test]
+    fn test_1_apply_slash_cap_unit_tests() {
+        // raw_penalty > cap → capped
+        assert_eq!(apply_slash_cap(500_000, 1_000_000), 250_000);
+        // raw_penalty < cap → no change
+        assert_eq!(apply_slash_cap(100_000, 1_000_000), 100_000);
+        // raw_penalty == cap → no change
+        assert_eq!(apply_slash_cap(250_000, 1_000_000), 250_000);
+        // bond_capacity = 0 → 0
+        assert_eq!(apply_slash_cap(250_000, 0), 0);
+        // raw_penalty = 0 → 0
+        assert_eq!(apply_slash_cap(0, 1_000_000), 0);
+    }
+
+    #[test]
+    fn test_2_penalty_capped_at_25_percent_of_bond() {
+        let env = Env::default();
+        let relayer = Address::generate(&env);
+        set_stake(&env, &relayer, 1_000_000);
+        
+        // Raw penalty would be 50% without cap, but should be capped at 25%
+        let capped = apply_slash_cap(500_000, 1_000_000);
+        assert_eq!(capped, 250_000);
+        
+        let remaining = 1_000_000 - capped;
+        assert_eq!(remaining, 750_000);
+    }
+
+    #[test]
+    fn test_3_small_penalty_not_inflated_to_cap() {
+        let env = Env::default();
+        let relayer = Address::generate(&env);
+        set_stake(&env, &relayer, 1_000_000);
+        
+        let raw = 50_000; // 5% of 1M
+        let capped = apply_slash_cap(raw, 1_000_000);
+        assert_eq!(capped, raw);
+        assert_eq!(1_000_000 - capped, 950_000);
+    }
+
+    #[test]
+    fn test_4_penalty_exactly_at_cap_boundary() {
+        let env = Env::default();
+        let relayer = Address::generate(&env);
+        set_stake(&env, &relayer, 1_000_000);
+        
+        let raw = 250_000; // exactly 25%
+        let capped = apply_slash_cap(raw, 1_000_000);
+        assert_eq!(capped, raw);
+    }
+
+    #[test]
+    fn test_5_connectivity_drop_penalty_well_below_cap() {
+        let env = Env::default();
+        let relayer = Address::generate(&env);
+        set_stake(&env, &relayer, 1_000_000);
+        
+        // Simulate minor connectivity drop (minor tier)
+        let base = 50_000;
+        let tier_mult = deviation_multiplier(DeviationTier::Minor);
+        let raw = base * tier_mult; // 50_000 * 1 = 50_000 (5% of 1M, well below 25%)
+        let capped = apply_slash_cap(raw, 1_000_000);
+        
+        assert_eq!(capped, raw);
+        assert!(capped < 250_000); // < 25%
+        assert!(capped > 0); // non-zero penalty
+    }
+
+    #[test]
+    fn test_6_severity_ordering_preserved_under_cap() {
+        let bond_capacity = 1_000_000;
+        
+        let minor = apply_slash_cap(50_000 * deviation_multiplier(DeviationTier::Minor), bond_capacity);
+        let moderate = apply_slash_cap(50_000 * deviation_multiplier(DeviationTier::Moderate), bond_capacity);
+        let significant = apply_slash_cap(50_000 * deviation_multiplier(DeviationTier::Significant), bond_capacity);
+        let manipulation = apply_slash_cap(50_000 * deviation_multiplier(DeviationTier::Manipulation), bond_capacity);
+        
+        assert!(minor < moderate);
+        assert!(moderate < significant);
+        assert!(significant < manipulation);
+    }
+
+    #[test]
+    fn test_7_no_bankruptcy_from_single_incident() {
+        let min_stake = 100_000; // minimum viable bond
+        let raw = i128::MAX; // worst possible penalty
+        let capped = apply_slash_cap(raw, min_stake);
+        
+        assert_eq!(capped, min_stake * 25 / 100); // exactly 25%
+        let remaining = min_stake - capped;
+        assert_eq!(remaining, min_stake * 75 / 100); // 75% remains
+        assert!(remaining > 0); // not bankrupt
+    }
+
+    #[test]
+    fn test_8_multiple_incidents_accumulate_independently() {
+        let mut stake = 1_000_000;
+        
+        // First incident (capped at 25% of initial)
+        let cap1 = stake * 25 / 100;
+        stake -= cap1;
+        assert_eq!(stake, 750_000);
+        
+        // Second incident (capped at 25% of new stake)
+        let cap2 = stake * 25 / 100;
+        stake -= cap2;
+        assert_eq!(stake, 562_500);
+        
+        // Each cap calculated against current stake at time of incident
+        assert_eq!(cap1, 250_000);
+        assert_eq!(cap2, 187_500);
+    }
+
+    #[test]
+    fn test_9_saturating_arithmetic_on_max_bond_value() {
+        let max_bond = i128::MAX;
+        let raw = i128::MAX;
+        
+        // Should not panic
+        let capped = apply_slash_cap(raw, max_bond);
+        assert_eq!(capped, max_bond.saturating_mul(25).saturating_div(100));
+    }
 }

@@ -75,6 +75,31 @@ fn test_initialize_sets_admin_and_assets() {
 }
 
 #[test]
+fn test_revoke_key_blocks_compromised_admin_and_provider() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PriceOracle, ());
+    let client = PriceOracleClient::new(&env, &contract_id);
+    let admin = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
+    let compromised = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        crate::auth::_set_admin(&env, &soroban_sdk::vec![&env, admin.clone()]);
+        crate::auth::_add_authorized(&env, &compromised);
+        crate::auth::_add_provider(&env, &compromised);
+    });
+
+    assert!(client.revoke_key(&admin, &compromised));
+
+    env.as_contract(&contract_id, || {
+        assert!(!crate::auth::_is_authorized(&env, &compromised));
+        assert!(!crate::auth::_is_provider(&env, &compromised));
+        assert!(crate::auth::_is_revoked(&env, &compromised));
+    });
+}
+
+#[test]
 #[should_panic]
 fn test_init_admin_panics_when_called_twice() {
     let env = Env::default();
@@ -242,6 +267,8 @@ fn test_update_price_rejects_flash_crash() {
     let provider = Address::generate(&env);
     let asset = symbol_short!("NGN");
 
+    let asset = symbol_short!("ZAR");
+    client.add_asset(&admin, &asset);
     set_admin(&env, &contract_id, &admin);
     add_provider(&env, &contract_id, &provider);
 
@@ -264,6 +291,8 @@ fn test_update_price_rejects_incomplete_quorum() {
     add_provider(&env, &contract_id, &provider);
     client.initialize(&admin, &soroban_sdk::vec![&env, asset.clone()]);
 
+    let asset = symbol_short!("ZAR");
+    client.add_asset(&non_admin, &asset);
     let result = client.try_update_price(&provider, &asset, &1_000_i128, &6u32, &100u32, &3_600u64, &100_000_i128);
     match result {
         Err(Ok(err)) => assert_eq!(err, Error::IncompleteQuorum),
