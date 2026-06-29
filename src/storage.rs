@@ -1,4 +1,5 @@
-use soroban_sdk::{contracttype, Address, Env, Symbol};
+use soroban_sdk::{contracttype, Address, Env, Symbol, Map};
+use crate::NodeProfile;
 
 /// Fixed-size tuple-based storage keys for gas-optimized lookups.
 /// Replaces dynamic Map structures with direct tuple keys.
@@ -60,6 +61,19 @@ pub const RENT_EXTEND_TO: u32 = 518_400;
 pub const ASSET_TTL_THRESHOLD: u32 = 5_000;
 pub const ASSET_TTL_EXTEND_TO: u32 = 100_000;
 
+pub const PROFILE_TTL_THRESHOLD: u32 = 10_000;
+
+pub fn get_node_profiles(env: &Env) -> Map<Address, NodeProfile> {
+    let key = Symbol::new(env, "NODES");
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PROFILE_TTL_THRESHOLD, env.storage().max_ttl());
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Map::new(env))
+}
+
 pub fn extend_subscription_rent(env: &Env, consumer_id: Address) {
     let key = DataKey::Subscription(consumer_id);
     env.storage().persistent().extend_ttl(&key, RENT_THRESHOLD, RENT_EXTEND_TO);
@@ -93,3 +107,4 @@ pub fn extend_asset_rent(env: &Env, asset: Symbol) -> bool {
 pub fn preflight_rent_check(env: &Env) {
     env.storage().instance().extend_ttl(0, ASSET_TTL_THRESHOLD);
 }
+
