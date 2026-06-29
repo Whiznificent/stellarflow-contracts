@@ -4,6 +4,7 @@ use crate::ContractError;
 const BALLOT_TTL_LEDGERS: u32 = 17_280;
 const BALLOT_TTL_THRESHOLD: u32 = 5_000;
 
+/// Pending contract upgrade staged for time-locked execution.
 #[contracttype]
 #[derive(Clone)]
 pub struct StagedUpgrade {

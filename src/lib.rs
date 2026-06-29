@@ -5,8 +5,8 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_sh
 /// Replaces heavy Symbol identifiers in high-frequency paths.
 pub type AssetId = u32;
 
-/// Convert a currency Symbol to a numeric AssetId using FNV-1a hash.
-/// Hashes the raw Val payload bits to avoid alloc / to_string in no_std.
+/// Convert a currency Symbol to a numeric AssetId using FNV-1a hash over the
+/// symbol's raw 64-bit payload. Deterministic and no-std compatible.
 pub fn symbol_to_asset_id(symbol: &Symbol) -> AssetId {
     let payload = symbol.to_val().get_payload();
     let mut hash: u32 = 2166136261u32;
@@ -58,18 +58,10 @@ pub mod staking_tiers;
 pub mod storage;
 pub mod temp_governance;
 pub mod validation;
-use crate::admin::AdminChangeProposal;
 use crate::governance::{
-    close_ballot, get_ballot, open_ballot, cast_vote,
-    verify_staged_delay, StagedUpgrade, VotingBallot,
+    verify_staged_delay, StagedUpgrade, VotingBallot, open_ballot, cast_vote, close_ballot,
 };
 use crate::validation::check_bond_capacity;
-use crate::governance::{verify_staged_delay, StagedUpgrade};
-use crate::temp_governance::{
-    store_temp_proposal, get_temp_proposal, has_temp_proposal, remove_temp_proposal,
-    extend_temp_proposal_ttl, EMERGENCY_REVOCATION_TEMP_KEY, REVOCATION_TEMP_KEY,
-    DEFAULT_PROPOSAL_TTL, EXTENDED_PROPOSAL_TTL
-};
 
 pub use staking_tiers::{AssetFeedMetrics, StakingTier, StakingTierConfig};
 
@@ -118,16 +110,14 @@ pub enum ContractError {
     TransferAlreadyPending = 24,
     /// No pending owner nominee exists to claim ownership.
     NoPendingOwner = 25,
+    /// Proposed value exceeds the maximum allowed fee ceiling.
+    FeeCeilingExceeded = 26,
     /// Attempted to divide by zero in a mathematical operation.
-    DivisionByZero = 26,
-    /// The proposed fee exceeds the maximum allowed ceiling.
-    FeeCeilingExceeded = 27,
+    DivisionByZero = 27,
     /// Incoming tracking sequence is less than or equal to the active stored checkpoint value.
-    StaleSequence = 33,
+    StaleSequence = 28,
     /// A price-variance configuration field violated one or more struct invariants.
-    InvalidVarianceConfig = 28,
-    /// Incoming telemetry payload's ledger timestamp is too far behind.
-    StaleTelemetryPayload = 34,
+    InvalidVarianceConfig = 33,
 }
 
 // Contract state keys
@@ -139,11 +129,10 @@ const STAKE_REGISTRY_KEY: Symbol = symbol_short!("STAKES");
 const TOTAL_STAKED_KEY: Symbol = symbol_short!("TOTAL");
 const HEARTBEAT_KEY: Symbol = symbol_short!("HBEAT");
 const HB_INTERVAL_KEY: Symbol = symbol_short!("HBINTV");
-const DEFAULT_HEARTBEAT_INTERVAL: u64 = 5 * 60;
-const REVOCATION_KEY: Symbol = symbol_short!("REVOKE");
-// Emergency key revocation / blocking
+pub(crate) const DEFAULT_HEARTBEAT_INTERVAL: u64 = 5 * 60;
+pub(crate) const SIGNERS_KEY: Symbol = symbol_short!("SIGNERS");
+pub(crate) const VALIDATOR_STATE_KEY: Symbol = symbol_short!("VLSTATE");
 pub(crate) const REVOKED_SIGNER_KEY: Symbol = symbol_short!("REVOKED");
-// EMERGENCY_REVOCATION_KEY is defined in admin.rs
 const NODE_PROFILES_KEY: Symbol = symbol_short!("NODES");
 const PLATFORM_CAPITAL_KEY: Symbol = symbol_short!("CAPITAL");
 const CONSENSUS_CACHE_KEY: Symbol = symbol_short!("CACHE");
@@ -151,6 +140,10 @@ const RELAYER_TTL_THRESHOLD: u32 = 5_000;
 const INSTANCE_TTL_EXTEND: u32 = 100_000;
 const TREASURY_KEY: Symbol = symbol_short!("TREASURY");
 const SEQUENCE_COUNTER_KEY: Symbol = symbol_short!("SEQCTR");
+
+/// Symbol used as the proposal identifier for admin revocation ballots.
+/// Stored in Temporary storage via the governance ballot module.
+const REVOCATION_KEY: Symbol = symbol_short!("REVOKE");
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -294,10 +287,38 @@ impl TimeLockedUpgradeContract {
         Ok(())
     }
 
-    pub fn propose_revocation(env: Env, proposer: Address, target: Address, replacement: Address) -> Result<(), ContractError> {
-        let data = Self::_load_data(&env)?;
-        if data.admin != proposer && !Self::_is_signer(&env, &proposer) {
+    /// Nominate a target signer for removal and open an ephemeral voting ballot
+    /// in Temporary storage. The ballot is automatically reclaimed by the ledger
+    /// once the consensus epoch window closes, keeping state lean.
+    pub fn propose_revocation(
+        env: Env,
+        proposer: Address,
+        target: Address,
+        replacement: Address,
+        sig_expires_at: u64,
+    ) -> Result<(), ContractError> {
+        if env.ledger().timestamp() > sig_expires_at {
+            return Err(ContractError::SignatureExpired);
+        }
+        admin::assert_not_revoked(&env, &proposer)?;
+        proposer.require_auth();
+        let data = Self::get_data(env.clone())?;
+        if !Self::_is_signer(&env, &proposer) && data.admin != proposer {
             return Err(ContractError::Unauthorized);
+        }
+        open_ballot(&env, REVOCATION_KEY, target, replacement, proposer)
+    }
+
+    /// Cast a multi-sig vote on the active revocation ballot stored in Temporary
+    /// storage. When the vote tally meets the threshold the admin is updated and
+    /// the ballot is immediately deleted from the ledger.
+    pub fn vote_revocation(
+        env: Env,
+        voter: Address,
+        sig_expires_at: u64,
+    ) -> Result<(), ContractError> {
+        if env.ledger().timestamp() > sig_expires_at {
+            return Err(ContractError::SignatureExpired);
         }
         proposer.require_auth();
         open_ballot(&env, REVOCATION_KEY, target, replacement, proposer)
@@ -311,26 +332,14 @@ impl TimeLockedUpgradeContract {
             return Err(ContractError::Unauthorized);
         }
 
-        // ── CHANGED: Retrieve from temporary storage instead of persistent ──
-        let mut proposal: RevocationProposal = get_temp_proposal(&env, &REVOCATION_TEMP_KEY)
-            .ok_or(ContractError::NoActiveProposal)?;
-
-        if proposal.votes.contains_key(voter.clone()) {
-            return Err(ContractError::AlreadyVoted);
-        }
-
-        proposal.votes.set(voter, ());
+        let ballot = cast_vote(&env, REVOCATION_KEY, voter)?;
 
         let threshold = Self::_revocation_threshold(&env);
         if ballot.votes.len() >= threshold {
             let mut contract_data = data;
             contract_data.admin = ballot.replacement.clone();
             env.storage().instance().set(&DATA_KEY, &contract_data);
-            // ── CHANGED: Remove from temporary storage instead of persistent ──
-            remove_temp_proposal(&env, &REVOCATION_TEMP_KEY);
-        } else {
-            // ── CHANGED: Store in temporary storage with extended TTL ──
-            store_temp_proposal(&env, &REVOCATION_TEMP_KEY, &proposal, EXTENDED_PROPOSAL_TTL);
+            close_ballot(&env, REVOCATION_KEY);
         }
         Ok(())
     }
@@ -340,6 +349,10 @@ impl TimeLockedUpgradeContract {
     }
 
     // --- Core Logic Boilerplate ---
+
+    fn _load_data(env: &Env) -> Result<ContractData, ContractError> {
+        env.storage().instance().get(&DATA_KEY).ok_or(ContractError::NotInitialized)
+    }
 
     pub fn get_data(env: Env) -> Result<ContractData, ContractError> {
         Self::_load_data(&env)
@@ -738,6 +751,8 @@ impl TimeLockedUpgradeContract {
             .set(&PLATFORM_CAPITAL_KEY, &capital);
     }
 
+    /// End the current consensus epoch: remove the cache, heartbeat map, and any
+    /// active revocation ballot from Temporary storage so the ledger stays lean.
     pub fn finalize_consensus(env: Env) {
         env.storage().temporary().remove(&CONSENSUS_CACHE_KEY);
         env.storage().temporary().remove(&HEARTBEAT_KEY);

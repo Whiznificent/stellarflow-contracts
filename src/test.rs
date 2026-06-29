@@ -602,6 +602,7 @@ fn test_regional_feed_allows_lower_stake_than_premier_feed() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
     let signer1 = soroban_sdk::Address::generate(&env);
     let signer2 = soroban_sdk::Address::generate(&env);
@@ -669,6 +670,7 @@ fn test_custom_tier_config_is_enforced() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
     let signer1 = soroban_sdk::Address::generate(&env);
     let signer2 = soroban_sdk::Address::generate(&env);
@@ -708,6 +710,7 @@ fn test_unstake_from_feed_updates_totals() {
     let client = TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
     let admin = soroban_sdk::Address::generate(&env);
+    let signer2 = soroban_sdk::Address::generate(&env);
     let node = soroban_sdk::Address::generate(&env);
     let signer1 = soroban_sdk::Address::generate(&env);
     let signer2 = soroban_sdk::Address::generate(&env);
