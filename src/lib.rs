@@ -18,29 +18,20 @@ pub fn symbol_to_asset_id(symbol: &Symbol) -> AssetId {
     hash
 }
 
-/// Convert an AssetId back to a Symbol for backward compatibility.
-/// Note: This is lossy - use pre-defined mappings for production.
-pub fn asset_id_to_symbol(_env: &Env, id: AssetId) -> Symbol {
-    // For common currencies, use a mapping table
-    match id {
-        // Nigerian Naira
-        3897123275 => symbol_short!("NGN"),
-        // Kenyan Shilling
-        2654435761 => symbol_short!("KES"),
-        // Ghanaian Cedi
-        4026531840 => symbol_short!("GHS"),
-        // West African CFA Franc
-        4160749568 => symbol_short!("CFA"),
-        // South African Rand
-        3219226362 => symbol_short!("ZAR"),
-        // Ugandan Shilling
-        2863311530 => symbol_short!("UGX"),
-        // Special asset identifiers
-        0 => symbol_short!("STAKE"),
-        1 => symbol_short!("VALUE"),
-        _ => symbol_short!("UNK"),
+/// Companion reverse lookup ensuring parity across asset pairing states.
+pub fn asset_id_to_symbol(asset_id: u32) -> Symbol {
+    match asset_id {
+        ID_NGN => symbol_short!("NGN"),
+        ID_GHS => symbol_short!("GHS"),
+        ID_CFA => symbol_short!("CFA"),
+        ID_KES => symbol_short!("KES"),
+        ID_ZAR => symbol_short!("ZAR"),
+        ID_UGX => symbol_short!("UGX"),
+        _ => panic!("Unknown asset ID mapping context"),
     }
 }
+
+
 
 pub(crate) mod nonce;
 use crate::nonce::{consume_nonce, get_nonce};
