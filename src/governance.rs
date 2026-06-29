@@ -9,15 +9,14 @@ const BALLOT_TTL_THRESHOLD: u32 = 5_000;
 #[contracttype]
 #[derive(Clone)]
 pub struct StagedUpgrade {
-    pub new_wasm_hash: BytesN<32>,
-    pub proposer: Address,
-    /// Ledger timestamp (seconds) at which the upgrade was staged.
-    pub staged_at: u64,
+    pub wasm_hash: BytesN<32>,
+    pub staged_at: u32,
 }
 
-/// Return true once the required wall-clock delay has elapsed since staging.
-pub fn verify_staged_delay(staged_at: u64, current_time: u64, delay_seconds: u64) -> bool {
-    current_time.saturating_sub(staged_at) >= delay_seconds
+/// Return true once the required ledger delay (5 000 ledgers ≈ 7 h at 5 s/ledger) has elapsed.
+pub fn verify_staged_delay(staged_at: u32, current_sequence: u32) -> bool {
+    const MIN_LEDGER_DELAY: u32 = 5_000;
+    current_sequence.saturating_sub(staged_at) >= MIN_LEDGER_DELAY
 }
 
 /// Storage key for an ephemeral voting ballot, scoped by proposal identifier.

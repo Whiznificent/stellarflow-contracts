@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 3,
     "nonce": 0
   },
   "auth": [
@@ -15,6 +15,9 @@
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 }
               ]
             }
@@ -197,10 +200,10 @@
                           "map": [
                             {
                               "key": {
-                                "symbol": "new_wasm_hash"
+                                "symbol": "staged_at"
                               },
                               "val": {
-                                "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                                "u32": 1
                               }
                             },
                             {
@@ -341,7 +344,14 @@
               }
             ],
             "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                }
+              ]
             }
           }
         }
@@ -478,10 +488,10 @@
               "map": [
                 {
                   "key": {
-                    "symbol": "new_wasm_hash"
+                    "symbol": "staged_at"
                   },
                   "val": {
-                    "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                    "u32": 1
                   }
                 },
                 {
@@ -596,7 +606,7 @@
               }
             ],
             "data": {
-              "u64": 172800
+              "u32": 5000
             }
           }
         }

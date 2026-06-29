@@ -17,7 +17,7 @@ const ALPHA_SCALE: i128 = 10_000;
 #[contracttype]
 pub enum DataKey {
     EmaRecord(AssetId), // Maps an asset id to its EMA
-    Alpha,             // The smoothing factor
+    Alpha,              // The smoothing factor
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,10 +48,14 @@ impl AnalyticsEngine {
         if price <= 0 {
             panic!("price must be positive");
         }
-        
-        let alpha: i128 = env.storage().instance().get(&DataKey::Alpha).unwrap_or_else(|| panic!("not initialized"));
+
+        let alpha: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Alpha)
+            .unwrap_or_else(|| panic!("not initialized"));
         let key = DataKey::EmaRecord(asset);
-        
+
         let new_ema = if let Some(record) = env.storage().persistent().get::<_, EmaRecord>(&key) {
             compute_smoothed_value(price, record.value, alpha)
         } else {

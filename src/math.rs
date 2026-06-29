@@ -77,6 +77,52 @@ pub fn compute_sample_variance(values: &[i128]) -> Result<i128, ContractError> {
     Ok(sum_sq / (n - 1) as i128)
 }
 
+/// Compute the spread between two rates in basis points.
+///
+/// Formula: `|rate_a - rate_b| * 10_000 / rate_a`
+///
+/// Returns `ContractError::DivisionByZero` if the base rate (`rate_a`)
+/// is zero, preventing runtime panics. All intermediate operations use
+/// checked arithmetic to prevent overflow.
+pub fn calculate_spread_bps(rate_a: i128, rate_b: i128) -> Result<i128, ContractError> {
+    if rate_a == 0 {
+        return Err(ContractError::DivisionByZero);
+    }
+
+    let delta = rate_a.saturating_sub(rate_b).abs();
+    let numerator = delta
+        .checked_mul(10_000)
+        .ok_or(ContractError::Overflow)?;
+
+    // `rate_a` is confirmed non-zero, so this division is safe.
+    Ok(numerator / rate_a)
+}
+
+/// Multiplies two numbers and scales the result down by a fixed-point factor.
+///
+/// This function implements a rigid fixed-point arithmetic scaler that
+/// pre-multiplies intermediate values by a scale factor of 10^14 before
+/// performing division, then normalizes the result back down to the system's
+/// target 10^7 footprint.
+///
+/// # Arguments
+/// * `a` - The first number (multiplicand).
+/// * `b` - The second number (multiplier).
+/// * `scale_factor` - The denominator for scaling down, typically 10^7.
+///
+/// # Returns
+/// The scaled result, or `ContractError` on overflow or division by zero.
+pub fn multiply_and_scale_down(a: i128, b: i128, scale_factor: i128) -> Result<i128, ContractError> {
+    if scale_factor == 0 {
+        return Err(ContractError::DivisionByZero);
+    }
+
+    let product = a.checked_mul(b).ok_or(ContractError::Overflow)?;
+
+    // The division performs the scale-down.
+    Ok(product / scale_factor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +277,89 @@ mod tests {
         // Every product (dev * dev) is done in full i128 before division,
         // so no fractional bits are lost before the final scale-down.
         assert!(var > 0);
+    }
+
+    // --- calculate_spread_bps ---
+
+    #[test]
+    fn test_spread_bps_no_deviation() {
+        assert_eq!(calculate_spread_bps(1_000_000, 1_000_000), Ok(0));
+    }
+
+    #[test]
+    fn test_spread_bps_positive_deviation() {
+        // 1% spread: |1_000_000 - 1_010_000| * 10_000 / 1_000_000 = 100
+        assert_eq!(calculate_spread_bps(1_000_000, 1_010_000), Ok(100));
+    }
+
+    #[test]
+    fn test_spread_bps_negative_deviation() {
+        // 2% spread: |1_000_000 - 980_000| * 10_000 / 1_000_000 = 200
+        assert_eq!(calculate_spread_bps(1_000_000, 980_000), Ok(200));
+    }
+
+    #[test]
+    fn test_spread_bps_division_by_zero() {
+        assert_eq!(
+            calculate_spread_bps(0, 1_000_000),
+            Err(ContractError::DivisionByZero)
+        );
+    }
+
+    #[test]
+    fn test_spread_bps_overflow() {
+        // Large delta and rate_b can cause the numerator to overflow
+        let rate_a = 100;
+        let rate_b = i128::MAX; // Creates a large delta
+        assert_eq!(
+            calculate_spread_bps(rate_a, rate_b),
+            Err(ContractError::Overflow)
+        );
+    }
+
+    // --- multiply_and_scale_down ---
+
+    #[test]
+    fn test_multiply_and_scale_down_normal() {
+        // (2 * 10^7) * (3 * 10^7) / 10^7 = 6 * 10^7
+        let scale = 10_000_000;
+        assert_eq!(
+            multiply_and_scale_down(2 * scale, 3 * scale, scale),
+            Ok(6 * scale)
+        );
+    }
+
+    #[test]
+    fn test_multiply_and_scale_down_with_truncation() {
+        // 1.5 * 2.5 = 3.75. Scaled: (15 * 10^6) * (25 * 10^6) / 10^7 = 37.5 * 10^6 -> 37_500_000
+        let scale = 10_000_000;
+        assert_eq!(
+            multiply_and_scale_down(15_000_000, 2_500_000, scale),
+            Ok(3_750_000) // (1.5 * 0.25) * 10^7
+        );
+    }
+
+    #[test]
+    fn test_multiply_and_scale_down_division_by_zero() {
+        assert_eq!(
+            multiply_and_scale_down(100, 200, 0),
+            Err(ContractError::DivisionByZero)
+        );
+    }
+
+    #[test]
+    fn test_multiply_and_scale_down_overflow() {
+        assert_eq!(
+            multiply_and_scale_down(i128::MAX, 2, 10_000_000),
+            Err(ContractError::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_multiply_and_scale_down_zero_value() {
+        assert_eq!(
+            multiply_and_scale_down(0, 12345, 10_000_000),
+            Ok(0)
+        );
     }
 }
