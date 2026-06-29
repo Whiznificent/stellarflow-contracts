@@ -1,5 +1,5 @@
-use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol, Vec};
 use crate::ContractError;
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol, Vec};
 
 /// Basis-point denominator used when converting a BPS fraction to a multiplier.
 pub const BPS_DENOMINATOR: u64 = 10_000;
@@ -24,7 +24,10 @@ pub fn apply_weight(value: u64, weight: u64) -> Result<u64, ContractError> {
 /// Accumulate the sum of `entry.value * entry.weight` across every entry in the
 /// dataset.  Each individual product and every running-total addition is checked
 /// so no intermediate result can wrap silently.
-pub fn compact_duplicate_price_rows(env: &Env, entries: &Vec<WeightedEntry>) -> Result<Vec<WeightedEntry>, ContractError> {
+pub fn compact_duplicate_price_rows(
+    env: &Env,
+    entries: &Vec<WeightedEntry>,
+) -> Result<Vec<WeightedEntry>, ContractError> {
     let mut compacted: Vec<WeightedEntry> = Vec::new(env);
     let mut index_by_value: Map<u64, u64> = Map::new(env);
 
@@ -56,7 +59,10 @@ pub fn compact_duplicate_price_rows(env: &Env, entries: &Vec<WeightedEntry>) -> 
     Ok(compacted)
 }
 
-pub fn compute_weighted_sum(env: &Env, entries: &Vec<WeightedEntry>) -> Result<(u64, u64), ContractError> {
+pub fn compute_weighted_sum(
+    env: &Env,
+    entries: &Vec<WeightedEntry>,
+) -> Result<(u64, u64), ContractError> {
     let compacted = compact_duplicate_price_rows(env, entries)?;
     let mut weighted_sum: u64 = 0;
     let mut total_weight: u64 = 0;
@@ -83,7 +89,10 @@ pub fn compute_weighted_sum(env: &Env, entries: &Vec<WeightedEntry>) -> Result<(
 /// Returns `(weighted_average, total_weight)`.  Division is always safe once
 /// the checked accumulation above has succeeded, but we guard the zero-weight
 /// edge case to avoid a panic.
-pub fn compute_weighted_average(env: &Env, entries: &Vec<WeightedEntry>) -> Result<u64, ContractError> {
+pub fn compute_weighted_average(
+    env: &Env,
+    entries: &Vec<WeightedEntry>,
+) -> Result<u64, ContractError> {
     let (weighted_sum, total_weight) = compute_weighted_sum(env, entries)?;
 
     if total_weight == 0 {
@@ -138,8 +147,8 @@ pub fn entry_weight_share_bps(entry_weight: u64, total_weight: u64) -> Result<u6
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PriceResult {
-    Live(i64),            // Live price from oracle
-    Fallback(i64, u32),   // Historical backup price and safety warning code
+    Live(i64),          // Live price from oracle
+    Fallback(i64, u32), // Historical backup price and safety warning code
 }
 
 /// Safety warning code returned when the live oracle feed is offline.
@@ -181,18 +190,26 @@ pub fn mock_oracle_price(env: &Env, _asset: Symbol) -> Result<i64, ContractError
 }
 
 /// Validate and register the sequence of the latest asset update.
-/// Rejects incoming price updates instantly if the incoming tracking sequence 
+/// Rejects incoming price updates instantly if the incoming tracking sequence
 /// is less than or equal to the active stored checkpoint value.
-pub fn verify_and_update_sequence(env: &Env, asset: Symbol, incoming_sequence: u32) -> Result<(), ContractError> {
+pub fn verify_and_update_sequence(
+    env: &Env,
+    asset: Symbol,
+    incoming_sequence: u32,
+) -> Result<(), ContractError> {
     let key = symbol_short!("SEQ_TRK");
-    let mut tracker: Map<Symbol, u32> = env.storage().instance().get(&key).unwrap_or_else(|| Map::new(env));
-    
+    let mut tracker: Map<Symbol, u32> = env
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or_else(|| Map::new(env));
+
     if let Some(active_sequence) = tracker.get(asset.clone()) {
         if incoming_sequence <= active_sequence {
             return Err(ContractError::StaleSequence);
         }
     }
-    
+
     tracker.set(asset, incoming_sequence);
     env.storage().instance().set(&key, &tracker);
     Ok(())
@@ -201,8 +218,8 @@ pub fn verify_and_update_sequence(env: &Env, asset: Symbol, incoming_sequence: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::Env;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Env;
 
     fn make_entries(env: &Env, pairs: &[(u64, u64)]) -> Vec<WeightedEntry> {
         let mut v = Vec::new(env);
@@ -389,7 +406,9 @@ mod tests {
         env.as_contract(&contract_id, || {
             let asset = symbol_short!("BTC");
             // Configure the mock price to return 50000
-            env.storage().temporary().set(&symbol_short!("mock_prc"), &50000i64);
+            env.storage()
+                .temporary()
+                .set(&symbol_short!("mock_prc"), &50000i64);
 
             let result = get_price_with_fallback(&env, asset, 45000);
             assert_eq!(result, PriceResult::Live(50000));
@@ -404,7 +423,9 @@ mod tests {
         env.as_contract(&contract_id, || {
             let asset = symbol_short!("BTC");
             // No mock price configured (or set to negative to trigger failure)
-            env.storage().temporary().set(&symbol_short!("mock_prc"), &-1i64);
+            env.storage()
+                .temporary()
+                .set(&symbol_short!("mock_prc"), &-1i64);
 
             let result = get_price_with_fallback(&env, asset, 45000);
             assert_eq!(result, PriceResult::Fallback(45000, WARNING_ORACLE_OFFLINE));

@@ -70,13 +70,13 @@ impl LiquidityLockContract {
         if let Some(stream) = env.storage().instance().get::<_, StreamData>(&stream_key) {
             let current_ledger = env.ledger().sequence();
             let elapsed = current_ledger.saturating_sub(stream.start_ledger);
-            
+
             let unlocked = if elapsed >= SCHEDULE_LEDGERS {
                 stream.total_amount
             } else {
                 (stream.total_amount * (elapsed as i128)) / (SCHEDULE_LEDGERS as i128)
             };
-            
+
             unlocked - stream.claimed_amount
         } else {
             0
@@ -88,7 +88,11 @@ impl LiquidityLockContract {
         recipient.require_auth();
 
         let stream_key = DataKey::Stream(recipient.clone());
-        let mut stream: StreamData = env.storage().instance().get(&stream_key).unwrap_or_else(|| panic!("no stream found"));
+        let mut stream: StreamData = env
+            .storage()
+            .instance()
+            .get(&stream_key)
+            .unwrap_or_else(|| panic!("no stream found"));
 
         let claimable = Self::get_claimable(env.clone(), recipient.clone());
         if claimable <= 0 {
