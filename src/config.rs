@@ -360,6 +360,7 @@ mod tests {
         let contract_id = env.register_contract(None, crate::TimeLockedUpgradeContract);
         let client = crate::TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
+        let contract_id = env.register_contract(None, crate::TimeLockedUpgradeContract);
         let admin = Address::generate(&env);
         let intruder = Address::generate(&env);
         let treasury = Address::generate(&env);
@@ -379,6 +380,7 @@ mod tests {
         let contract_id = env.register_contract(None, crate::TimeLockedUpgradeContract);
         let client = crate::TimeLockedUpgradeContractClient::new(&env, &contract_id);
 
+        let contract_id = env.register_contract(None, crate::TimeLockedUpgradeContract);
         let admin = Address::generate(&env);
         let treasury = Address::generate(&env);
         client.initialize(&admin, &treasury);
