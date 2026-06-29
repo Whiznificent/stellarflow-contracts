@@ -1,10 +1,10 @@
-use soroban_sdk::{contracttype, BytesN};
+use soroban_sdk::contracttype;
 
 const MIN_LEDGER_DELAY: u32 = 5000;
 
 #[contracttype]
 pub struct StagedUpgrade {
-    pub wasm_hash: BytesN<32>,
+    pub wasm_hash: soroban_sdk::BytesN<32>,
     pub staged_at: u32,
 }
 

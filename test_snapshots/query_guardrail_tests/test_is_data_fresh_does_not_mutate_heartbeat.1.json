@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 3,
     "nonce": 0
   },
   "auth": [
@@ -15,6 +15,9 @@
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 }
               ]
             }
@@ -33,7 +36,7 @@
               "function_name": "update_heartbeat",
               "args": [
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -87,7 +90,7 @@
                   "map": [
                     {
                       "key": {
-                        "u32": 2699528942
+                        "u32": 4026531840
                       },
                       "val": {
                         "u64": 0
@@ -99,7 +102,7 @@
             },
             "ext": "v0"
           },
-          17280
+          15
         ]
       ],
       [
@@ -141,14 +144,6 @@
                             },
                             {
                               "key": {
-                                "symbol": "max_fee_ceiling"
-                              },
-                              "val": {
-                                "u64": 1000000000
-                              }
-                            },
-                            {
-                              "key": {
                                 "symbol": "value"
                               },
                               "val": {
@@ -156,6 +151,14 @@
                               }
                             }
                           ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "TREASURY"
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                         }
                       }
                     ]
@@ -165,7 +168,7 @@
             },
             "ext": "v0"
           },
-          4095
+          105000
         ]
       ],
       [
@@ -252,7 +255,7 @@
             },
             "ext": "v0"
           },
-          4095
+          105000
         ]
       ]
     ]
@@ -277,7 +280,14 @@
               }
             ],
             "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                }
+              ]
             }
           }
         }
@@ -326,7 +336,7 @@
             "data": {
               "vec": [
                 {
-                  "symbol": "GHS"
+                  "u32": 4026531840
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -378,7 +388,7 @@
               }
             ],
             "data": {
-              "u32": 2699528942
+              "u32": 4026531840
             }
           }
         }
@@ -427,7 +437,7 @@
               }
             ],
             "data": {
-              "u32": 2699528942
+              "u32": 4026531840
             }
           }
         }
@@ -476,7 +486,7 @@
               }
             ],
             "data": {
-              "u32": 2699528942
+              "u32": 4026531840
             }
           }
         }
@@ -525,7 +535,7 @@
               }
             ],
             "data": {
-              "u32": 2699528942
+              "u32": 4026531840
             }
           }
         }
@@ -574,7 +584,7 @@
               }
             ],
             "data": {
-              "u32": 2699528942
+              "u32": 4026531840
             }
           }
         }
@@ -623,7 +633,7 @@
               }
             ],
             "data": {
-              "u32": 2699528942
+              "u32": 4026531840
             }
           }
         }
