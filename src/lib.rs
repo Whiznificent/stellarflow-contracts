@@ -69,9 +69,15 @@ pub mod governance;
 pub mod math;
 pub mod staking_tiers;
 pub mod storage;
+pub mod temp_governance;
 pub mod validation;
 use crate::validation::check_bond_capacity;
 use crate::governance::{verify_staged_delay, StagedUpgrade};
+use crate::temp_governance::{
+    store_temp_proposal, get_temp_proposal, has_temp_proposal, remove_temp_proposal,
+    extend_temp_proposal_ttl, EMERGENCY_REVOCATION_TEMP_KEY, REVOCATION_TEMP_KEY,
+    DEFAULT_PROPOSAL_TTL, EXTENDED_PROPOSAL_TTL
+};
 
 pub use staking_tiers::{AssetFeedMetrics, StakingTier, StakingTierConfig};
 
@@ -328,10 +334,8 @@ impl TimeLockedUpgradeContract {
             return Err(ContractError::Unauthorized);
         }
 
-        let mut proposal: RevocationProposal = env
-            .storage()
-            .instance()
-            .get(&REVOCATION_KEY)
+        // ── CHANGED: Retrieve from temporary storage instead of persistent ──
+        let mut proposal: RevocationProposal = get_temp_proposal(&env, &REVOCATION_TEMP_KEY)
             .ok_or(ContractError::NoActiveProposal)?;
 
         if proposal.votes.contains_key(voter.clone()) {
@@ -345,9 +349,11 @@ impl TimeLockedUpgradeContract {
             let mut contract_data = data;
             contract_data.admin = proposal.replacement.clone();
             env.storage().instance().set(&DATA_KEY, &contract_data);
-            env.storage().instance().remove(&REVOCATION_KEY);
+            // ── CHANGED: Remove from temporary storage instead of persistent ──
+            remove_temp_proposal(&env, &REVOCATION_TEMP_KEY);
         } else {
-            env.storage().instance().set(&REVOCATION_KEY, &proposal);
+            // ── CHANGED: Store in temporary storage with extended TTL ──
+            store_temp_proposal(&env, &REVOCATION_TEMP_KEY, &proposal, EXTENDED_PROPOSAL_TTL);
         }
         Ok(())
     }
@@ -961,6 +967,26 @@ impl TimeLockedUpgradeContract {
     /// multi-sig coordinator group.
     pub fn is_revoked(env: Env, addr: Address) -> bool {
         admin::is_revoked(&env, &addr)
+    }
+
+    /// Explicitly purge an expired or stale emergency revocation proposal.
+    ///
+    /// This function allows cleanup of proposals that have failed to reach quorum or
+    /// have become stale. While the Soroban network will eventually auto-purge via TTL,
+    /// explicit removal frees resources sooner and allows reinitiating a new proposal.
+    ///
+    /// This can be called by any party since the primary security model relies on
+    /// the voting threshold for proposal execution, not on proposal creation.
+    pub fn purge_expired_revocation_proposal(env: Env) -> Result<(), ContractError> {
+        admin::purge_emergency_revocation_proposal(&env)
+    }
+
+    /// Check if an emergency revocation proposal is currently active.
+    ///
+    /// Returns true only if the proposal exists in temporary storage and hasn't expired
+    /// according to Soroban's TTL mechanism.
+    pub fn has_active_revocation_proposal(env: Env) -> bool {
+        admin::has_active_emergency_revocation(&env)
     }
 
     // --- Private Helpers ---

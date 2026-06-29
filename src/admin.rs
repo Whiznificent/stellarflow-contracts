@@ -1,10 +1,18 @@
 use crate::{ContractData, ContractError, DATA_KEY, REVOKED_SIGNER_KEY, SIGNERS_KEY};
+use crate::temp_governance::{
+    store_temp_proposal, get_temp_proposal, has_temp_proposal, remove_temp_proposal,
+    extend_temp_proposal_ttl, EMERGENCY_REVOCATION_TEMP_KEY,
+    DEFAULT_PROPOSAL_TTL, EXTENDED_PROPOSAL_TTL
+};
 use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol};
 
 pub(crate) const PENDING_OWNER_KEY: Symbol = symbol_short!("PNDOWN");
 pub(crate) const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 
 // ── Emergency key revocation ─────────────────────────────────────────────
+// NOTE: Emergency revocation proposals are now stored in temporary storage
+// via EMERGENCY_REVOCATION_TEMP_KEY. The persistent EMERGENCY_REVOCATION_KEY
+// is kept for backward compatibility but is no longer used for new proposals.
 
 pub(crate) const EMERGENCY_REVOCATION_KEY: Symbol = symbol_short!("EMERREV");
 
@@ -80,7 +88,8 @@ fn execute_emergency_revocation(
         env.storage().instance().set(&DATA_KEY, &contract_data);
     }
 
-    env.storage().instance().remove(&EMERGENCY_REVOCATION_KEY);
+    // ── CHANGED: Remove from temporary storage instead of persistent ──
+    remove_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY);
 }
 
 // ── Emergency revocation — Phase 1: open a proposal ──────────────────────
@@ -116,7 +125,8 @@ pub fn propose_emergency_revocation(
     proposer.require_auth();
 
     // Guard: only one active emergency proposal at a time.
-    if env.storage().instance().has(&EMERGENCY_REVOCATION_KEY) {
+    // ── CHANGED: Check temporary storage instead of persistent ──
+    if has_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY) {
         return Err(ContractError::EmergencyRevocationAlreadyActive);
     }
 
@@ -141,9 +151,8 @@ pub fn propose_emergency_revocation(
     if proposal.votes.len() >= revocation_threshold(env) {
         execute_emergency_revocation(env, data, proposal);
     } else {
-        env.storage()
-            .instance()
-            .set(&EMERGENCY_REVOCATION_KEY, &proposal);
+        // ── CHANGED: Store in temporary storage instead of persistent ──
+        store_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY, &proposal, DEFAULT_PROPOSAL_TTL);
     }
 
     Ok(())
@@ -187,10 +196,8 @@ pub fn vote_emergency_revocation(
         return Err(ContractError::Unauthorized);
     }
 
-    let mut proposal: EmergencyRevocationProposal = env
-        .storage()
-        .instance()
-        .get(&EMERGENCY_REVOCATION_KEY)
+    // ── CHANGED: Retrieve from temporary storage instead of persistent ──
+    let mut proposal: EmergencyRevocationProposal = get_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY)
         .ok_or(ContractError::NoActiveEmergencyRevocation)?;
 
     // Prevent double-voting.
@@ -239,13 +246,12 @@ pub fn vote_emergency_revocation(
             env.storage().instance().set(&DATA_KEY, &contract_data);
         }
 
-        // 5. Wipe the proposal so a fresh one can be raised if needed.
-        env.storage().instance().remove(&EMERGENCY_REVOCATION_KEY);
+        // 5. ── CHANGED: Wipe from temporary storage instead of persistent ──
+        remove_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY);
     } else {
         // Threshold not yet reached — persist the updated vote tally.
-        env.storage()
-            .instance()
-            .set(&EMERGENCY_REVOCATION_KEY, &proposal);
+        // ── CHANGED: Store in temporary storage with extended TTL ──
+        store_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY, &proposal, EXTENDED_PROPOSAL_TTL);
     }
 
     Ok(())
@@ -254,8 +260,9 @@ pub fn vote_emergency_revocation(
 // ── Emergency revocation — query ─────────────────────────────────────────
 
 /// Returns the active emergency revocation proposal, if one exists.
+/// ── NOTE: Proposals are now stored in temporary storage and will auto-purge after TTL ──
 pub fn get_emergency_revocation_proposal(env: &Env) -> Option<EmergencyRevocationProposal> {
-    env.storage().instance().get(&EMERGENCY_REVOCATION_KEY)
+    get_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY)
 }
 
 /// Returns `true` if `addr` has been stamped as revoked.
@@ -361,4 +368,41 @@ pub fn set_paused(env: &Env, caller: Address, paused: bool) -> Result<(), Contra
 /// Returns true when the contract is in emergency-paused state.
 pub fn is_paused(env: &Env) -> bool {
     env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
+}
+
+// ── Proposal cleanup and lifecycle management ────────────────────────────
+
+/// Explicitly purge an expired or stale emergency revocation proposal from temporary storage.
+///
+/// This function allows the admin or any authorized party to proactively clean up
+/// proposals that have failed to reach quorum or have become stale. While the Soroban
+/// network will eventually auto-purge these via TTL expiration, explicit removal:
+/// - Frees storage resources sooner
+/// - Allows reinitiating a new proposal immediately
+/// - Provides audit trail of cleanup actions
+///
+/// The proposal must exist and no threshold check is performed — this is purely
+/// a cleanup operation for failed or expired voting attempts.
+pub fn purge_emergency_revocation_proposal(env: &Env) -> Result<(), ContractError> {
+    // Verify the contract is initialized
+    let _data: ContractData = env
+        .storage()
+        .instance()
+        .get(&DATA_KEY)
+        .ok_or(ContractError::NotInitialized)?;
+
+    // Purge the proposal from temporary storage if it exists
+    if has_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY) {
+        remove_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY);
+    }
+
+    Ok(())
+}
+
+/// Check if an emergency revocation proposal is currently active (stored in temp storage).
+///
+/// Returns true only if the proposal exists in temporary storage and hasn't expired
+/// according to Soroban's TTL mechanism.
+pub fn has_active_emergency_revocation(env: &Env) -> bool {
+    has_temp_proposal(env, &EMERGENCY_REVOCATION_TEMP_KEY)
 }
