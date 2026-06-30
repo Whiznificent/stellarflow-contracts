@@ -123,6 +123,36 @@ pub fn multiply_and_scale_down(a: i128, b: i128, scale_factor: i128) -> Result<i
     Ok(product / scale_factor)
 }
 
+/// Compute the Cumulative Exponential Moving Average (CEMA).
+///
+/// Formula: `CEMA_new = (value * alpha) / scale_factor + (cema_prev * (scale_factor - alpha)) / scale_factor`
+///
+/// This implements intermediate fractional scaling rules to keep numbers
+/// comfortably within standard 128-bit primitive constraints while preserving
+/// precision and protecting against integer overflow using checked mathematical operators.
+pub fn compute_cema(
+    value: i128,
+    cema_prev: i128,
+    alpha: i128,
+    scale_factor: i128,
+) -> Result<i128, ContractError> {
+    if scale_factor == 0 {
+        return Err(ContractError::DivisionByZero);
+    }
+    
+    // The complement of the scaling factor
+    let inv_alpha = scale_factor.checked_sub(alpha).ok_or(ContractError::Overflow)?;
+    
+    // Intermediate scaling rules: scale down the individual terms *before* addition.
+    // This prevents the sum of products (value * alpha + cema_prev * inv_alpha) 
+    // from exceeding the 128-bit limit when processing large transaction volumes.
+    let scaled_new_value = multiply_and_scale_down(value, alpha, scale_factor)?;
+    let scaled_prev_cema = multiply_and_scale_down(cema_prev, inv_alpha, scale_factor)?;
+    
+    // Safely combine the scaled terms
+    scaled_new_value.checked_add(scaled_prev_cema).ok_or(ContractError::Overflow)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +390,40 @@ mod tests {
         assert_eq!(
             multiply_and_scale_down(0, 12345, 10_000_000),
             Ok(0)
+        );
+    }
+
+    // --- compute_cema ---
+
+    #[test]
+    fn test_compute_cema_normal() {
+        // scale = 10^7, alpha = 0.1 * 10^7 = 1_000_000
+        // value = 120, prev = 100
+        // result = 120 * 0.1 + 100 * 0.9 = 12 + 90 = 102
+        let scale = 10_000_000;
+        let alpha = 1_000_000;
+        assert_eq!(compute_cema(120, 100, alpha, scale), Ok(102));
+    }
+
+    #[test]
+    fn test_compute_cema_zero_alpha() {
+        let scale = 10_000_000;
+        assert_eq!(compute_cema(120, 100, 0, scale), Ok(100));
+    }
+
+    #[test]
+    fn test_compute_cema_full_alpha() {
+        let scale = 10_000_000;
+        assert_eq!(compute_cema(120, 100, scale, scale), Ok(120));
+    }
+
+    #[test]
+    fn test_compute_cema_overflow() {
+        let scale = 10_000_000;
+        // i128::MAX * alpha will overflow multiply_and_scale_down
+        assert_eq!(
+            compute_cema(i128::MAX, 100, 1_000_000, scale),
+            Err(ContractError::Overflow)
         );
     }
 }
