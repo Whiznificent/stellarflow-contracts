@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, Address, Env, Vec, token};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
+};
 
 #[cfg(test)]
 mod test;
@@ -11,7 +13,7 @@ pub enum DataKey {
     Oracle,
     Balance(Address),
     Allowance(Address, Address), // (consumer, relayer)
-    RelayerFunders(Address), // relayer -> list of consumers who funded them
+    RelayerFunders(Address),     // relayer -> list of consumers who funded them
 }
 
 #[contracterror]
@@ -57,13 +59,13 @@ impl GasTank {
 
         let balance_key = DataKey::Balance(consumer.clone());
         let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
-        let new_balance = current_balance.checked_add(amount).expect("balance overflow");
+        let new_balance = current_balance
+            .checked_add(amount)
+            .expect("balance overflow");
         env.storage().persistent().set(&balance_key, &new_balance);
 
-        env.events().publish(
-            (symbol_short!("deposit"), consumer.clone()),
-            amount,
-        );
+        env.events()
+            .publish((symbol_short!("deposit"), consumer.clone()), amount);
         Ok(())
     }
 
@@ -86,14 +88,17 @@ impl GasTank {
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer(&env.current_contract_address(), &consumer, &amount);
 
-        env.events().publish(
-            (symbol_short!("withdraw"), consumer.clone()),
-            amount,
-        );
+        env.events()
+            .publish((symbol_short!("withdraw"), consumer.clone()), amount);
         Ok(())
     }
 
-    pub fn set_allowance(env: Env, consumer: Address, relayer: Address, amount: i128) -> Result<(), Error> {
+    pub fn set_allowance(
+        env: Env,
+        consumer: Address,
+        relayer: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
         consumer.require_auth();
         if amount < 0 {
             return Err(Error::InvalidAmount);
@@ -103,7 +108,11 @@ impl GasTank {
         env.storage().persistent().set(&allowance_key, &amount);
 
         let funders_key = DataKey::RelayerFunders(relayer.clone());
-        let mut funders: Vec<Address> = env.storage().persistent().get(&funders_key).unwrap_or_else(|| Vec::new(&env));
+        let mut funders: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&funders_key)
+            .unwrap_or_else(|| Vec::new(&env));
 
         if amount > 0 {
             if !funders.iter().any(|f| f == consumer) {
@@ -122,7 +131,11 @@ impl GasTank {
         }
 
         env.events().publish(
-            (symbol_short!("allowance"), consumer.clone(), relayer.clone()),
+            (
+                symbol_short!("allowance"),
+                consumer.clone(),
+                relayer.clone(),
+            ),
             amount,
         );
         Ok(())
@@ -144,7 +157,11 @@ impl GasTank {
         oracle.require_auth();
 
         let funders_key = DataKey::RelayerFunders(relayer.clone());
-        let funders: Vec<Address> = env.storage().persistent().get(&funders_key).unwrap_or_else(|| Vec::new(&env));
+        let funders: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&funders_key)
+            .unwrap_or_else(|| Vec::new(&env));
 
         let token_addr = Self::get_token(env.clone());
         let token_client = token::Client::new(&env, &token_addr);
@@ -164,7 +181,11 @@ impl GasTank {
             }
 
             // Charge amount is the minimum of the allowance and the consumer's available balance
-            let charge = if allowance < balance { allowance } else { balance };
+            let charge = if allowance < balance {
+                allowance
+            } else {
+                balance
+            };
             if charge > 0 {
                 // Update consumer's balance
                 let new_balance = balance - charge;
@@ -175,7 +196,11 @@ impl GasTank {
 
                 // Publish reimbursement event
                 env.events().publish(
-                    (symbol_short!("reimburse"), relayer.clone(), consumer.clone()),
+                    (
+                        symbol_short!("reimburse"),
+                        relayer.clone(),
+                        consumer.clone(),
+                    ),
                     charge,
                 );
             }

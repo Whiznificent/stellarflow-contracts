@@ -15,6 +15,9 @@
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 }
               ]
             }
@@ -50,6 +53,9 @@
                 },
                 {
                   "u64": 18446744073709551615
+                },
+                {
+                  "u64": 1
                 }
               ]
             }
@@ -87,6 +93,9 @@
                 },
                 {
                   "u64": 18446744073709551615
+                },
+                {
+                  "u64": 2
                 }
               ]
             }
@@ -99,7 +108,7 @@
   ],
   "ledger": {
     "protocol_version": 20,
-    "sequence_number": 0,
+    "sequence_number": 60,
     "timestamp": 301,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 10,
@@ -132,7 +141,7 @@
                   "map": [
                     {
                       "key": {
-                        "symbol": "VALUE"
+                        "u32": 1
                       },
                       "val": {
                         "u64": 301
@@ -144,7 +153,7 @@
             },
             "ext": "v0"
           },
-          15
+          17280
         ]
       ],
       [
@@ -248,6 +257,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "max_fee_ceiling"
+                              },
+                              "val": {
+                                "u64": 1000000000
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "value"
                               },
                               "val": {
@@ -255,6 +272,31 @@
                               }
                             }
                           ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "SEQCTR"
+                        },
+                        "val": {
+                          "map": [
+                            {
+                              "key": {
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                              },
+                              "val": {
+                                "u64": 2
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "TREASURY"
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                         }
                       }
                     ]
@@ -330,7 +372,7 @@
             },
             "ext": "v0"
           },
-          0
+          60
         ]
       ],
       [
@@ -409,7 +451,14 @@
               }
             ],
             "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                }
+              ]
             }
           }
         }
@@ -456,7 +505,7 @@
               }
             ],
             "data": {
-              "symbol": "VALUE"
+              "u32": 1
             }
           }
         }
@@ -523,6 +572,9 @@
                 },
                 {
                   "u64": 18446744073709551615
+                },
+                {
+                  "u64": 1
                 }
               ]
             }
@@ -571,7 +623,7 @@
               }
             ],
             "data": {
-              "symbol": "VALUE"
+              "u32": 1
             }
           }
         }
@@ -620,7 +672,7 @@
               }
             ],
             "data": {
-              "symbol": "VALUE"
+              "u32": 1
             }
           }
         }
@@ -669,7 +721,7 @@
               }
             ],
             "data": {
-              "symbol": "VALUE"
+              "u32": 1
             }
           }
         }
@@ -736,6 +788,9 @@
                 },
                 {
                   "u64": 18446744073709551615
+                },
+                {
+                  "u64": 2
                 }
               ]
             }
@@ -784,7 +839,7 @@
               }
             ],
             "data": {
-              "symbol": "VALUE"
+              "u32": 1
             }
           }
         }
