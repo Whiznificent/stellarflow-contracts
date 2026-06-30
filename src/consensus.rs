@@ -4,6 +4,13 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol, Vec};
 /// Basis-point denominator used when converting a BPS fraction to a multiplier.
 pub const BPS_DENOMINATOR: u64 = 10_000;
 
+/// Minimum safety threshold for block height gaps between consecutive submissions.
+/// Prevents ledger bloat from rapid telemetry updates within the same block window.
+pub const MIN_BLOCK_GAP_THRESHOLD: u32 = 3;
+
+/// Storage key for tracking the last successful ledger index per node.
+pub(crate) const BLOCK_TRACKER_KEY: Symbol = symbol_short!("BLKTRK");
+
 /// A single provider's submission paired with its consensus weight (stake amount).
 #[contracttype]
 #[derive(Clone)]
@@ -228,6 +235,35 @@ pub fn verify_and_update_sequence(
 
     tracker.set(asset, incoming_sequence);
     env.storage().instance().set(&key, &tracker);
+    Ok(())
+}
+
+/// Validate and enforce minimum block height gap between consecutive submissions.
+/// Rejects incoming transaction payloads if the current network ledger index has not
+/// progressed by at least MIN_BLOCK_GAP_THRESHOLD blocks since the node's last successful entry.
+///
+/// This prevents ledger bloat and reduces gas fees from rapid telemetry updates within
+/// a singular block index window.
+pub fn verify_and_update_block_gap(
+    env: &Env,
+    node: Address,
+) -> Result<(), ContractError> {
+    let current_ledger_index = env.ledger().sequence();
+    let mut block_tracker: Map<Address, u32> = env
+        .storage()
+        .instance()
+        .get(&BLOCK_TRACKER_KEY)
+        .unwrap_or_else(|| Map::new(env));
+
+    if let Some(last_ledger_index) = block_tracker.get(node.clone()) {
+        let gap = current_ledger_index.saturating_sub(last_ledger_index);
+        if gap < MIN_BLOCK_GAP_THRESHOLD {
+            return Err(ContractError::StaleSequence);
+        }
+    }
+
+    block_tracker.set(node, current_ledger_index);
+    env.storage().instance().set(&BLOCK_TRACKER_KEY, &block_tracker);
     Ok(())
 }
 

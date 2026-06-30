@@ -173,6 +173,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "max_fee_ceiling"
+                              },
+                              "val": {
+                                "u64": 1000000000
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "value"
                               },
                               "val": {
@@ -198,21 +206,21 @@
                             },
                             {
                               "key": {
-                                "symbol": "wasm_hash"
+                                "symbol": "proposer"
                               },
                               "val": {
-                                "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "staged_at"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             }
                           ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "TREASURY"
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                         }
                       }
                     ]

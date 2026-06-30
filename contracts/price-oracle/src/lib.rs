@@ -437,6 +437,63 @@ pub trait StellarFlowTrait {
         bad_relayer: Address,
         amount: i128,
     ) -> Result<(), ContractError>;
+
+    // ── Circuit-Breaker ───────────────────────────────────────────────────────
+
+    /// Register a new coordinator node that may trip/reset the circuit-breaker.
+    ///
+    /// Only an authorized admin may call this.
+    fn register_circuit_breaker_coordinator(
+        env: Env,
+        admin: Address,
+        coordinator: Address,
+    ) -> Result<(), ContractError>;
+
+    /// Remove a coordinator node's circuit-breaker privileges.
+    ///
+    /// Only an authorized admin may call this.
+    fn remove_circuit_breaker_coordinator(
+        env: Env,
+        admin: Address,
+        coordinator: Address,
+    ) -> Result<(), ContractError>;
+
+    /// Trip the global circuit-breaker, instantly dropping all price reads.
+    ///
+    /// Only a verified coordinator node may call this.
+    fn trip_circuit_breaker(env: Env, coordinator: Address) -> Result<(), ContractError>;
+
+    /// Reset (lift) the global circuit-breaker, re-enabling price reads.
+    ///
+    /// Only a verified coordinator node may call this.
+    fn reset_circuit_breaker(env: Env, coordinator: Address) -> Result<(), ContractError>;
+
+    /// Trip the circuit-breaker for a specific high-volatility asset pair.
+    ///
+    /// Only a verified coordinator node may call this.
+    fn trip_circuit_breaker_for_asset(
+        env: Env,
+        coordinator: Address,
+        asset: Symbol,
+    ) -> Result<(), ContractError>;
+
+    /// Reset the circuit-breaker for a specific asset pair.
+    ///
+    /// Only a verified coordinator node may call this.
+    fn reset_circuit_breaker_for_asset(
+        env: Env,
+        coordinator: Address,
+        asset: Symbol,
+    ) -> Result<(), ContractError>;
+
+    /// Return `true` when the global circuit-breaker flag is active.
+    fn is_circuit_breaker_active(env: Env) -> bool;
+
+    /// Return `true` when the per-asset circuit-breaker flag is active.
+    fn is_asset_circuit_breaker_active(env: Env, asset: Symbol) -> bool;
+
+    /// Return a snapshot of the circuit-breaker state for monitoring dashboards.
+    fn get_circuit_breaker_info(env: Env) -> crate::admin::CircuitBreakerInfo;
 }
 
 #[contractclient(name = "TokenContractClient")]
@@ -504,6 +561,14 @@ pub enum ContractError {
     InvalidSlippageTolerance = 11,
     /// Fewer than three independent node sources contributed to the current consensus pool.
     IncompleteQuorum = 12,
+    /// The circuit-breaker is active — price reads for high-volatility assets are blocked.
+    CircuitBreakerActive = 13,
+    /// The circuit-breaker is already active; cannot trip it again until it is reset.
+    CircuitBreakerAlreadyActive = 14,
+    /// The caller is not a registered coordinator node.
+    NotCoordinator = 15,
+    /// The circuit-breaker is not currently active; nothing to reset.
+    CircuitBreakerNotActive = 16,
 }
 
 pub type Error = ContractError;
@@ -1422,6 +1487,8 @@ impl PriceOracle {
         if crate::auth::_is_halted(&env) {
             panic_with_error!(&env, ContractError::EmergencyHalted);
         }
+        // Circuit-breaker: drop reads for quarantined high-volatility pairs.
+        crate::admin::_require_circuit_breaker_inactive(&env, &asset);
         let key = if verified {
             DataKey::VerifiedPrice(asset)
         } else {
@@ -1607,6 +1674,8 @@ impl PriceOracle {
         if crate::auth::_is_halted(&env) {
             panic_with_error!(&env, ContractError::EmergencyHalted);
         }
+        // Circuit-breaker: drop reads for quarantined high-volatility pairs.
+        crate::admin::_require_circuit_breaker_inactive(&env, &asset);
         match env
             .storage()
             .persistent()
@@ -1629,6 +1698,8 @@ impl PriceOracle {
         if crate::auth::_is_halted(&env) {
             panic_with_error!(&env, ContractError::EmergencyHalted);
         }
+        // Circuit-breaker: drop reads for quarantined high-volatility pairs.
+        crate::admin::_require_circuit_breaker_inactive(&env, &asset);
         env.storage()
             .persistent()
             .get::<DataKey, PriceData>(&DataKey::VerifiedPrice(asset))
@@ -4234,11 +4305,87 @@ impl PriceOracle {
     pub fn claim_rewards(env: Env, relayer: Address, token_contract: Address) -> i128 {
         crate::rewards::Rewards::claim_rewards(env, relayer, token_contract)
     }
+
+    // ── Circuit-Breaker ───────────────────────────────────────────────────────
+
+    /// Register a new coordinator node that may trip/reset the circuit-breaker.
+    pub fn register_circuit_breaker_coordinator(
+        env: Env,
+        admin: Address,
+        coordinator: Address,
+    ) -> Result<(), ContractError> {
+        _require_not_destroyed(&env);
+        crate::admin::register_circuit_breaker_coordinator(&env, &admin, &coordinator)
+    }
+
+    /// Remove a coordinator node's circuit-breaker privileges.
+    pub fn remove_circuit_breaker_coordinator(
+        env: Env,
+        admin: Address,
+        coordinator: Address,
+    ) -> Result<(), ContractError> {
+        _require_not_destroyed(&env);
+        crate::admin::remove_circuit_breaker_coordinator(&env, &admin, &coordinator)
+    }
+
+    /// Trip the global circuit-breaker, instantly dropping all price reads.
+    pub fn trip_circuit_breaker(
+        env: Env,
+        coordinator: Address,
+    ) -> Result<(), ContractError> {
+        _require_not_destroyed(&env);
+        crate::admin::trip_circuit_breaker(&env, &coordinator)
+    }
+
+    /// Reset (lift) the global circuit-breaker, re-enabling price reads.
+    pub fn reset_circuit_breaker(
+        env: Env,
+        coordinator: Address,
+    ) -> Result<(), ContractError> {
+        _require_not_destroyed(&env);
+        crate::admin::reset_circuit_breaker(&env, &coordinator)
+    }
+
+    /// Trip the circuit-breaker for a specific high-volatility asset pair.
+    pub fn trip_circuit_breaker_for_asset(
+        env: Env,
+        coordinator: Address,
+        asset: Symbol,
+    ) -> Result<(), ContractError> {
+        _require_not_destroyed(&env);
+        crate::admin::trip_circuit_breaker_for_asset(&env, &coordinator, &asset)
+    }
+
+    /// Reset the circuit-breaker for a specific asset pair.
+    pub fn reset_circuit_breaker_for_asset(
+        env: Env,
+        coordinator: Address,
+        asset: Symbol,
+    ) -> Result<(), ContractError> {
+        _require_not_destroyed(&env);
+        crate::admin::reset_circuit_breaker_for_asset(&env, &coordinator, &asset)
+    }
+
+    /// Return `true` when the global circuit-breaker flag is active.
+    pub fn is_circuit_breaker_active(env: Env) -> bool {
+        crate::admin::is_circuit_breaker_active(&env)
+    }
+
+    /// Return `true` when the per-asset circuit-breaker flag is active.
+    pub fn is_asset_circuit_breaker_active(env: Env, asset: Symbol) -> bool {
+        crate::admin::is_asset_circuit_breaker_active(&env, &asset)
+    }
+
+    /// Return a snapshot of the circuit-breaker state for monitoring dashboards.
+    pub fn get_circuit_breaker_info(env: Env) -> crate::admin::CircuitBreakerInfo {
+        crate::admin::get_circuit_breaker_info(&env)
+    }
 }
 
 mod asset_symbol;
 mod auth;
 mod callbacks;
+pub mod admin;
 #[cfg(test)]
 mod delegate_tests;
 pub mod math;
