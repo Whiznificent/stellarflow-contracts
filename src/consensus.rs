@@ -196,6 +196,22 @@ pub fn mock_oracle_price(env: &Env, _asset: Symbol) -> Result<i64, ContractError
     }
 }
 
+/// Verify that the current ledger sequence falls within the allowed epoch validation window.
+///
+/// Rejects submissions with `ContractError::EpochClosed` if the current
+/// host ledger has advanced past the epoch end, or is before the epoch start.
+pub fn verify_epoch_window(
+    env: &Env,
+    epoch_start: u32,
+    epoch_end: u32,
+) -> Result<(), ContractError> {
+    let current_ledger = env.ledger().sequence();
+    if current_ledger < epoch_start || current_ledger > epoch_end {
+        return Err(ContractError::EpochClosed);
+    }
+    Ok(())
+}
+
 /// Validate and register the sequence of the latest asset update.
 /// Rejects incoming price updates instantly if the incoming tracking sequence
 /// is less than or equal to the active stored checkpoint value.
@@ -254,8 +270,8 @@ pub fn verify_and_update_block_gap(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::Env;
+    use soroban_sdk::testutils::{Address as _, Ledger};
 
     fn make_entries(env: &Env, pairs: &[(u64, u64)]) -> Vec<WeightedEntry> {
         let mut v = Vec::new(env);
@@ -483,5 +499,41 @@ mod tests {
             let events = env.events().all();
             assert!(events.len() > 0);
         });
+    }
+
+    #[test]
+    fn test_verify_epoch_window_success() {
+        let env = Env::default();
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            timestamp: 0,
+            protocol_version: 0,
+            sequence_number: 100,
+            network_id: Default::default(),
+            base_reserve: 0,
+            min_temp_entry_ttl: 0,
+            min_persistent_entry_ttl: 0,
+            max_entry_ttl: 0,
+        });
+        
+        assert_eq!(verify_epoch_window(&env, 90, 110), Ok(()));
+        assert_eq!(verify_epoch_window(&env, 100, 100), Ok(()));
+    }
+
+    #[test]
+    fn test_verify_epoch_window_closed() {
+        let env = Env::default();
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            timestamp: 0,
+            protocol_version: 0,
+            sequence_number: 100,
+            network_id: Default::default(),
+            base_reserve: 0,
+            min_temp_entry_ttl: 0,
+            min_persistent_entry_ttl: 0,
+            max_entry_ttl: 0,
+        });
+        
+        assert_eq!(verify_epoch_window(&env, 101, 120), Err(ContractError::EpochClosed));
+        assert_eq!(verify_epoch_window(&env, 80, 99), Err(ContractError::EpochClosed));
     }
 }
