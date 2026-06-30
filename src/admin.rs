@@ -7,6 +7,18 @@ use crate::temp_governance::{
 use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol, TryFromVal, Val};
 use crate::{ContractData, ContractError, DATA_KEY, SIGNERS_KEY};
 
+fn get_signers(env: &Env) -> Map<Address, ()> {
+    env.storage()
+        .instance()
+        .get(&SIGNERS_KEY)
+        .unwrap_or_else(|| Map::new(env))
+}
+
+fn revocation_threshold(env: &Env) -> u32 {
+    let n = get_signers(env).len();
+    if n == 0 { 1 } else { n / 2 + 1 }
+}
+
 pub(crate) const PENDING_OWNER_KEY: Symbol = symbol_short!("PNDOWN");
 pub(crate) const PENDING_ADMIN_KEY: Symbol = symbol_short!("PADMIN");
 
