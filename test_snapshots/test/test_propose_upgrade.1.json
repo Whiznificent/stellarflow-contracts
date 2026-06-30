@@ -15,6 +15,9 @@
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 }
               ]
             }
@@ -172,6 +175,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "max_fee_ceiling"
+                              },
+                              "val": {
+                                "u64": 1000000000
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "value"
                               },
                               "val": {
@@ -189,18 +200,10 @@
                           "map": [
                             {
                               "key": {
-                                "symbol": "new_wasm_hash"
+                                "symbol": "staged_at"
                               },
                               "val": {
-                                "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "proposed_at"
-                              },
-                              "val": {
-                                "u64": 0
+                                "u32": 1
                               }
                             },
                             {
@@ -209,6 +212,14 @@
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "staged_at"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             }
                           ]
@@ -333,7 +344,14 @@
               }
             ],
             "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                }
+              ]
             }
           }
         }
@@ -470,18 +488,10 @@
               "map": [
                 {
                   "key": {
-                    "symbol": "new_wasm_hash"
+                    "symbol": "staged_at"
                   },
                   "val": {
-                    "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "proposed_at"
-                  },
-                  "val": {
-                    "u64": 0
+                    "u32": 1
                   }
                 },
                 {
@@ -490,6 +500,14 @@
                   },
                   "val": {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "staged_at"
+                  },
+                  "val": {
+                    "u64": 0
                   }
                 }
               ]
@@ -588,7 +606,7 @@
               }
             ],
             "data": {
-              "u64": 172800
+              "u32": 5000
             }
           }
         }

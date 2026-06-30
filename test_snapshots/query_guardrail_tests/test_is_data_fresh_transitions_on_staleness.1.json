@@ -98,7 +98,7 @@
             },
             "ext": "v0"
           },
-          15
+          17280
         ]
       ],
       [
@@ -140,6 +140,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "max_fee_ceiling"
+                              },
+                              "val": {
+                                "u64": 1000000000
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "value"
                               },
                               "val": {
@@ -151,7 +159,7 @@
                       },
                       {
                         "key": {
-                          "symbol": "TREASRY"
+                          "symbol": "TREASURY"
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -164,7 +172,7 @@
             },
             "ext": "v0"
           },
-          15000
+          105000
         ]
       ],
       [
@@ -251,7 +259,7 @@
             },
             "ext": "v0"
           },
-          15000
+          105000
         ]
       ]
     ]
