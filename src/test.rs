@@ -575,8 +575,8 @@ fn test_regional_feed_allows_lower_stake_than_premier_feed() {
     client.register_signer(&signer1, &admin);
     client.register_signer(&signer2, &admin);
 
-    let regional: AssetId = 2654435761; // KES
-    let premier: AssetId = 3897123275; // NGN
+    let regional: Symbol = symbol_short!("KES");
+    let premier: Symbol = symbol_short!("NGN");
 
     let signers = soroban_sdk::vec![&env, signer1.clone(), signer2.clone()];
     client.set_asset_feed_metrics(&admin, &regional, &10, &100, &signers);
@@ -651,7 +651,6 @@ fn test_custom_tier_config_is_enforced() {
             standard_min_stake: 2_500,
             premier_min_stake: 25_000,
         },
-        &signers,
     );
 
     let asset: AssetId = 3219226362; // ZAR
