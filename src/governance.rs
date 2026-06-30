@@ -1,90 +1,106 @@
-use soroban_sdk::{contracttype, contracterror, Env};
-use ledger_time_helper::current_ledger_sequence;
+use soroban_sdk::{contracttype, Address, BytesN, Env, Map, Symbol};
+use crate::ContractError;
 
-pub const EXPIRATION_WINDOW_LEDGERS: u32 = 20_000;
+const BALLOT_TTL_LEDGERS: u32 = 17_280;
+const BALLOT_TTL_THRESHOLD: u32 = 5_000;
 
-// --- kept from the original governance.rs so existing lib.rs imports compile ---
-pub use staged::StagedUpgrade;
-pub use staged::MIN_LEDGER_DELAY;
-pub use staged::verify_staged_delay;
+/// Pending contract upgrade staged for time-locked execution.
+#[contracttype]
+#[derive(Clone)]
+pub struct StagedUpgrade {
+    pub new_wasm_hash: BytesN<32>,
+    pub proposer: Address,
+    pub staged_at: u64,
+}
 
-mod staged {
-    use soroban_sdk::contracttype;
+pub fn verify_staged_delay(staged_at: u64, current_time: u64, delay_seconds: u64) -> bool {
+    current_time.saturating_sub(staged_at) >= delay_seconds
+}
 
-    pub const MIN_LEDGER_DELAY: u32 = 5000;
+#[contracttype]
+pub enum BallotKey {
+    Proposal(Symbol),
+}
 
-    #[contracttype]
-    #[derive(Clone, Debug, PartialEq)]
-    pub struct StagedUpgrade {
-        pub wasm_hash: soroban_sdk::BytesN<32>,
-        pub staged_at: u32,
+#[contracttype]
+#[derive(Clone)]
+pub struct VotingBallot {
+    pub target: Address,
+    pub replacement: Address,
+    pub proposer: Address,
+    pub proposed_at: u64,
+    pub votes: Map<Address, ()>,
+}
+
+pub fn open_ballot(
+    env: &Env,
+    proposal_id: Symbol,
+    target: Address,
+    replacement: Address,
+    proposer: Address,
+) -> Result<(), ContractError> {
+    let key = BallotKey::Proposal(proposal_id);
+    if env.storage().temporary().has(&key) {
+        return Err(ContractError::ProposalAlreadyActive);
     }
-
-    pub fn verify_staged_delay(staged_at: u32, current_ledger: u32) -> bool {
-        current_ledger.saturating_sub(staged_at) >= MIN_LEDGER_DELAY
-    }
+    let ballot = VotingBallot {
+        target,
+        replacement,
+        proposer,
+        proposed_at: env.ledger().timestamp(),
+        votes: Map::new(env),
+    };
+    env.storage().temporary().set(&key, &ballot);
+    env.storage().temporary().extend_ttl(&key, BALLOT_TTL_THRESHOLD, BALLOT_TTL_LEDGERS);
+    Ok(())
 }
 
-// ---- Governance proposal types ----
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum GovernanceError {
-    ProposalNotFound = 1,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub enum ProposalStatus {
-    Active,
-    Passed,
-    Rejected,
-    Defunct,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct Proposal {
-    pub proposal_id: u64,
-    pub status: ProposalStatus,
-    pub created_at_ledger: u32,
-    pub vote_count: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DataKey {
-    Proposal(u64),
-    ProposalVotes(u64),
-}
-
-/// Checks whether `proposal_id` has exceeded the 20,000-ledger expiration
-/// window and, if so, transitions it to `Defunct` and removes both storage
-/// slots.  Operates in strict O(1): at most 2 reads, 1 write, 2 removes.
-pub fn expire_proposal(env: Env, proposal_id: u64) -> Result<ProposalStatus, GovernanceError> {
-    let key = DataKey::Proposal(proposal_id);
-    let proposal: Proposal = env
+pub fn cast_vote(
+    env: &Env,
+    proposal_id: Symbol,
+    voter: Address,
+) -> Result<VotingBallot, ContractError> {
+    let key = BallotKey::Proposal(proposal_id);
+    let mut ballot: VotingBallot = env
         .storage()
-        .persistent()
+        .temporary()
         .get(&key)
-        .ok_or(GovernanceError::ProposalNotFound)?;
-
-    // Already in a terminal (non-Active) state — return as-is.
-    if proposal.status != ProposalStatus::Active {
-        return Ok(proposal.status);
+        .ok_or(ContractError::NoActiveProposal)?;
+    if ballot.votes.contains_key(voter.clone()) {
+        return Err(ContractError::AlreadyVoted);
     }
-
-    let elapsed = current_ledger_sequence(&env).saturating_sub(proposal.created_at_ledger);
-    if elapsed < EXPIRATION_WINDOW_LEDGERS {
-        return Ok(ProposalStatus::Active);
-    }
-
-    // Transition and clean up both storage slots.
-    env.storage().persistent().remove(&key);
-    env.storage()
-        .persistent()
-        .remove(&DataKey::ProposalVotes(proposal_id));
-
-    Ok(ProposalStatus::Defunct)
+    ballot.votes.set(voter, ());
+    env.storage().temporary().set(&key, &ballot);
+    env.storage().temporary().extend_ttl(&key, BALLOT_TTL_THRESHOLD, BALLOT_TTL_LEDGERS);
+    Ok(ballot)
 }
+
+pub fn get_ballot(env: &Env, proposal_id: Symbol) -> Option<VotingBallot> {
+    env.storage().temporary().get(&BallotKey::Proposal(proposal_id))
+}
+
+pub fn close_ballot(env: &Env, proposal_id: Symbol) {
+    env.storage().temporary().remove(&BallotKey::Proposal(proposal_id));
+}
+
+/// Verify that any incoming parameter modification maps to a target execution block height
+/// strictly greater than the current active configuration index.
+pub fn verify_block_height(target_height: u32, active_index: u32) -> bool {
+    target_height > active_index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_verify_block_height() {
+        // Strictly greater target height should be valid
+        assert!(verify_block_height(101, 100));
+        // Equal target height should be invalid
+        assert!(!verify_block_height(100, 100));
+        // Less than target height should be invalid
+        assert!(!verify_block_height(99, 100));
+    }
+}
+
