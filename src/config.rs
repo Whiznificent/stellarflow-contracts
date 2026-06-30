@@ -14,7 +14,7 @@
 //!   the compile-time defaults.
 //!
 //! Callers must never write individual fields directly to storage; doing so
-//! would leave neighbouring slots in an inconsistent state across ledger
+//! would leave neighbouring slots in an inconsistent state across 
 //! registers.
 
 use soroban_sdk::{contracttype, symbol_short, Env, Symbol};
